@@ -1,0 +1,220 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "sqlite"
+  url      = env("DATABASE_URL")
+}
+
+// ============================================================
+// МРТ ТОЧНО — CRM направляющих врачей (Internal Tool)
+// Все ключевые сущности имеют стабильные UUID (задел под
+// бессшовную интеграцию с внешней CRM). Backend API-first.
+// ============================================================
+
+/// Роли пользователей системы
+enum Role {
+  MP // МП — Администратор территории
+  OPERATOR // Пользователь — Оператор
+}
+
+/// Пользователи системы (МП и Операторы). МП курирует НВ.
+model User {
+  id           String   @id @default(uuid())
+  login        String   @unique
+  password     String // bcrypt hash
+  name         String
+  role         Role     @default(OPERATOR)
+  isActive     Boolean  @default(true)
+  createdAt    DateTime @default(now())
+  updatedAt    DateTime @updatedAt
+
+  doctors      Doctor[]           @relation("DoctorMP")
+  requests     Request[]          @relation("RequestAuthor")
+  visits       Visit[]            @relation("VisitAuthor")
+  presets      ReportPreset[]
+  auditLogs    AuditLog[]
+}
+
+/// Справочник городов
+model City {
+  id        String   @id @default(uuid())
+  name      String   @unique
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  lpus      Lpu[]
+  doctors   Doctor[]
+}
+
+/// Справочник ЛПУ (лечебно-профилактические учреждения) — привязка к городам
+model Lpu {
+  id        String   @id @default(uuid())
+  name      String
+  address   String?
+  cityId    String
+  city      City     @relation(fields: [cityId], references: [id], onDelete: Restrict)
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  doctors   DoctorLpu[]
+  requests  Request[]
+  visits    Visit[]
+  @@unique([name, cityId])
+}
+
+/// Справочник номенклатуры (услуги/обследования). Используется в полях
+/// «Что назначено» и «Что сделано» заявки.
+model Nomenclature {
+  id        String   @id @default(uuid())
+  name      String
+  category  String   @default("Обследования")
+  isActive  Boolean  @default(true)
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  requestsAssigned Request[] @relation("AssignedNomenclature")
+  requestsDone     Request[] @relation("DoneNomenclature")
+  @@unique([name, category])
+}
+
+/// Справочник статусов сотрудничества (ИП, СЗ, штат и др.)
+model CooperationStatus {
+  id        String   @id @default(uuid())
+  name      String   @unique
+  color     String   @default("#7692cb")
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  doctors   Doctor[]
+}
+
+/// НВ (Направляющий врач) — ключевая сущность CRM
+model Doctor {
+  id             String   @id @default(uuid())
+  fullName       String
+  phone          String?
+  birthDate      DateTime?
+  statusId       String?
+  status         CooperationStatus? @relation(fields: [statusId], references: [id])
+  mpId           String
+  mp             User     @relation("DoctorMP", fields: [mpId], references: [id])
+  cityId         String?
+  city           City?    @relation(fields: [cityId], references: [id])
+  comment        String?
+
+  // —— Задел под бонусную систему (этап 2): скрыты/неактивны на старте ——
+  bonusType      String?  // CASH | ACCUMULATIVE
+  bonusBalance   Float    @default(0)
+  payoutDetails  String?
+
+  createdAt      DateTime @default(now())
+  updatedAt      DateTime @updatedAt
+
+  lpus           DoctorLpu[]
+  visits         Visit[]
+  requests       Request[]
+  bonusTransactions BonusTransaction[]
+  @@index([mpId])
+}
+
+/// Связь НВ ↔ ЛПУ (многие ко многим, двусторонняя навигация)
+model DoctorLpu {
+  doctorId String
+  lpuId    String
+  doctor   Doctor @relation(fields: [doctorId], references: [id], onDelete: Cascade)
+  lpu      Lpu    @relation(fields: [lpuId], references: [id], onDelete: Cascade)
+  @@id([doctorId, lpuId])
+}
+
+/// Визит к НВ (прошедший / планируемый) — источник календаря МП
+model Visit {
+  id        String     @id @default(uuid())
+  doctorId  String
+  doctor    Doctor     @relation(fields: [doctorId], references: [id], onDelete: Cascade)
+  lpuId     String?
+  lpu       Lpu?       @relation(fields: [lpuId], references: [id])
+  mpId      String
+  mp        User       @relation("VisitAuthor", fields: [mpId], references: [id])
+  date      DateTime
+  purpose   String
+  comment   String?
+  status    String     @default("PLANNED") // PLANNED | CONDUCTED | CANCELLED
+  createdAt DateTime   @default(now())
+  updatedAt DateTime   @updatedAt
+  @@index([date])
+  @@index([mpId])
+}
+
+/// Заявка (учет направлений). Поле «Сумма» исключено из структуры данных.
+model Request {
+  id             String   @id @default(uuid())
+  date           DateTime
+  patientName    String
+  doctorId       String
+  doctor         Doctor   @relation(fields: [doctorId], references: [id])
+  lpuId          String
+  lpu            Lpu      @relation(fields: [lpuId], references: [id])
+  destination    String? // Куда направление
+  assignedId     String? // Что назначено (Номенклатура)
+  assigned       Nomenclature? @relation("AssignedNomenclature", fields: [assignedId], references: [id])
+  doneId         String? // Что сделано (Номенклатура)
+  done           Nomenclature? @relation("DoneNomenclature", fields: [doneId], references: [id])
+  authorId       String
+  author         User     @relation("RequestAuthor", fields: [authorId], references: [id])
+
+  // Задел: «Начисленный бонус» (колонка на старте скрыта, рассчитывается
+  // отдельным журналом проводок, а не «на лету»)
+  bonusAmount    Float?
+
+  createdAt      DateTime @default(now())
+  updatedAt      DateTime @updatedAt
+  @@index([date])
+  @@index([doctorId])
+  @@index([lpuId])
+}
+
+/// Задел под модуль лояльности (этап 2): журнал проводок с аудитом.
+/// Бонусы НЕ считаются «на лету» из заявок.
+model BonusTransaction {
+  id         String   @id @default(uuid())
+  doctorId   String
+  doctor     Doctor   @relation(fields: [doctorId], references: [id], onDelete: Cascade)
+  requestId  String?
+  amount     Float
+  type       String   @default("ACCRUAL") // ACCRUAL | WRITEOFF
+  status     String   @default("DRAFT") // DRAFT | CONFIRMED | PAID
+  note       String?
+  createdAt  DateTime @default(now())
+  updatedAt  DateTime @updatedAt
+}
+
+/// Сохраненные пользовательские пресеты фильтров отчетов
+model ReportPreset {
+  id          String   @id @default(uuid())
+  userId      String
+  user        User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  name        String
+  reportKey   String   @default("examinations")
+  filtersJson String
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+  @@index([userId])
+}
+
+/// Журнал аудита: изменения ключевых сущностей (НВ, Заявки), удаления,
+/// экспорты больших объемов данных — с меткой времени и ID пользователя.
+/// Задел под синхронизацию с внешней CRM (9.2 ТЗ).
+model AuditLog {
+  id        String   @id @default(uuid())
+  userId    String?
+  user      User?    @relation(fields: [userId], references: [id])
+  userName  String?
+  action    String // CREATE | UPDATE | DELETE | EXPORT | IMPORT | LOGIN
+  entity    String // doctor | request | visit | city | lpu | nomenclature | status | user | report
+  entityId  String?
+  details   String?
+  createdAt DateTime @default(now())
+  @@index([createdAt])
+}

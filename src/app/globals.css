@@ -1,0 +1,195 @@
+@import "tailwindcss";
+@import "tw-animate-css";
+
+@custom-variant dark (&:is(.dark *));
+
+@theme inline {
+  --color-background: var(--background);
+  --color-foreground: var(--foreground);
+  --font-sans: var(--font-body);
+  --font-display: var(--font-arimo);
+  --color-sidebar-ring: var(--sidebar-ring);
+  --color-sidebar-border: var(--sidebar-border);
+  --color-sidebar-accent-foreground: var(--sidebar-accent-foreground);
+  --color-sidebar-accent: var(--sidebar-accent);
+  --color-sidebar-primary-foreground: var(--sidebar-primary-foreground);
+  --color-sidebar-primary: var(--sidebar-primary);
+  --color-sidebar-foreground: var(--sidebar-foreground);
+  --color-sidebar: var(--sidebar);
+  --color-chart-5: var(--chart-5);
+  --color-chart-4: var(--chart-4);
+  --color-chart-3: var(--chart-3);
+  --color-chart-2: var(--chart-2);
+  --color-chart-1: var(--chart-1);
+  --color-ring: var(--ring);
+  --color-input: var(--input);
+  --color-border: var(--border);
+  --color-destructive: var(--destructive);
+  --color-accent-foreground: var(--accent-foreground);
+  --color-accent: var(--accent);
+  --color-muted-foreground: var(--muted-foreground);
+  --color-muted: var(--muted);
+  --color-secondary-foreground: var(--secondary-foreground);
+  --color-secondary: var(--secondary);
+  --color-primary-foreground: var(--primary-foreground);
+  --color-primary: var(--primary);
+  --color-popover-foreground: var(--popover-foreground);
+  --color-popover: var(--popover);
+  --color-card-foreground: var(--card-foreground);
+  --color-card: var(--card);
+  --radius-sm: calc(var(--radius) - 4px);
+  --radius-md: calc(var(--radius) - 2px);
+  --radius-lg: var(--radius);
+  --radius-xl: calc(var(--radius) + 4px);
+
+  /* —— Фирменная палитра «МРТ ТОЧНО» (гайдлайн, июнь 2026) —— */
+  --color-brand: #194688;          /* Тёмно-синий — заголовки, активная навигация, основной текст */
+  --color-brand-dark: #0f3163;     /* Тёмно-синий, hover */
+  --color-brand-deep: #0b2450;     /* Глубокий синий для сайдбара */
+  --color-azure: #0196d2;          /* Медицинская лазурь — CTA, ссылки, иконки действий */
+  --color-azure-dark: #0179a8;
+  --color-sky: #7692cb;            /* Светло-голубой — вторичные кнопки, теги, графика */
+  --color-sky-light: #e3eaf8;      /* Светло-голубой 25% */
+  --color-terra: #e8a486;          /* Тёплый терракот — уведомления, метки, календарь */
+  --color-terra-dark: #d9825e;
+  --color-terra-light: #fbe9e0;
+  --color-soft: #fbfbfb;           /* Мягкий белый — основной фон (не #FFF) */
+}
+
+:root {
+  --radius: 0.75rem;
+  --background: #fbfbfb;
+  --foreground: #194688;
+  --card: #ffffff;
+  --card-foreground: #194688;
+  --popover: #ffffff;
+  --popover-foreground: #194688;
+  --primary: #0196d2;
+  --primary-foreground: #ffffff;
+  --secondary: #e3eaf8;
+  --secondary-foreground: #194688;
+  --muted: #f1f4fa;
+  --muted-foreground: #5b6b8c;
+  --accent: #e3eaf8;
+  --accent-foreground: #194688;
+  --destructive: #d9825e;
+  --border: #e3e9f4;
+  --input: #d8e0f0;
+  --ring: #0196d2;
+  --chart-1: #194688;
+  --chart-2: #0196d2;
+  --chart-3: #7692cb;
+  --chart-4: #e8a486;
+  --chart-5: #b7c6e8;
+  --sidebar: #194688;
+  --sidebar-foreground: #dfe7f6;
+  --sidebar-primary: #0196d2;
+  --sidebar-primary-foreground: #ffffff;
+  --sidebar-accent: rgba(255, 255, 255, 0.09);
+  --sidebar-accent-foreground: #ffffff;
+  --sidebar-border: rgba(255, 255, 255, 0.12);
+  --sidebar-ring: #0196d2;
+}
+
+@layer base {
+  * {
+    @apply border-border outline-ring/50;
+  }
+  html {
+    font-size: 15px;
+  }
+  body {
+    @apply bg-background text-foreground;
+    font-family: var(--font-body), "Cygre", "Segoe UI", system-ui, sans-serif;
+  }
+  h1, h2, h3, h4 {
+    font-family: var(--font-arimo), var(--font-body), "Arial", sans-serif;
+    color: var(--foreground);
+    letter-spacing: -0.01em;
+  }
+  ::selection {
+    background: rgba(1, 150, 210, 0.18);
+  }
+}
+
+/* Кастомный скроллбар — фирменная светло-голубая гамма */
+*::-webkit-scrollbar {
+  width: 9px;
+  height: 9px;
+}
+*::-webkit-scrollbar-track {
+  background: transparent;
+}
+*::-webkit-scrollbar-thumb {
+  background: #c6d2ea;
+  border-radius: 8px;
+  border: 2px solid transparent;
+  background-clip: content-box;
+}
+*::-webkit-scrollbar-thumb:hover {
+  background: #7692cb;
+  border: 2px solid transparent;
+  background-clip: content-box;
+}
+* {
+  scrollbar-width: thin;
+  scrollbar-color: #c6d2ea transparent;
+}
+
+/* Фирменный паттерн — концентрические дуги (томограф), для плашек и боковых панелей */
+.mrt-pattern {
+  background-image: radial-gradient(
+      circle at 24px 24px,
+      rgba(255, 255, 255, 0.07) 0,
+      rgba(255, 255, 255, 0.07) 5px,
+      transparent 5px,
+      transparent 11px,
+      rgba(255, 255, 255, 0.05) 11px,
+      rgba(255, 255, 255, 0.05) 14px,
+      transparent 14px,
+      transparent 22px,
+      rgba(255, 255, 255, 0.04) 22px,
+      rgba(255, 255, 255, 0.04) 25px,
+      transparent 25px,
+      transparent 34px
+    );
+  background-size: 72px 72px;
+}
+.mrt-pattern-light {
+  background-image: radial-gradient(
+      circle at 24px 24px,
+      rgba(25, 70, 136, 0.06) 0,
+      rgba(25, 70, 136, 0.06) 5px,
+      transparent 5px,
+      transparent 11px,
+      rgba(25, 70, 136, 0.045) 11px,
+      rgba(25, 70, 136, 0.045) 14px,
+      transparent 14px,
+      transparent 22px,
+      rgba(25, 70, 136, 0.035) 22px,
+      rgba(25, 70, 136, 0.035) 25px,
+      transparent 25px,
+      transparent 34px
+    );
+  background-size: 72px 72px;
+}
+
+/* Плавное появление вкладок/вьюх */
+.view-enter {
+  animation: view-enter 0.25s ease both;
+}
+@keyframes view-enter {
+  from {
+    opacity: 0;
+    transform: translateY(6px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+/* Скрытые/неактивные поля задела — приглушенный вид */
+.placeholder-section {
+  border-style: dashed;
+}
