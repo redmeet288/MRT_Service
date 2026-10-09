@@ -100,7 +100,7 @@
   }
   body {
     @apply bg-background text-foreground;
-    font-family: var(--font-body), "Cygre", "Segoe UI", system-ui, sans-serif;
+    font-family: var(--font-body), "Segoe UI", system-ui, sans-serif;
   }
   h1, h2, h3, h4 {
     font-family: var(--font-arimo), var(--font-body), "Arial", sans-serif;
@@ -192,4 +192,156 @@
 /* Скрытые/неактивные поля задела — приглушенный вид */
 .placeholder-section {
   border-style: dashed;
+}
+
+/* ============================================================
+   Стиль «1С:Предприятие» — списки справочников и форма отчета.
+   По требованию заказчика желто-оранжевая гамма 1С заменена на
+   корпоративные оттенки брендбука (синий #194688, лазурь #0196d2,
+   светло-голубой #7692cb / #e3eaf8) — только брендовая палитра.
+   ============================================================ */
+.onec-window {
+  background: #ffffff;
+  border: 1px solid #cfd8e8;
+  border-radius: 3px;
+  overflow: hidden;
+  box-shadow: 0 1px 2px rgba(25, 70, 136, 0.06);
+}
+.onec-titlebar {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 8px 12px;
+  border-bottom: 1px solid #d5ddec;
+  background: #f2f5fb;
+}
+.onec-toolbar {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  flex-wrap: wrap;
+  padding: 6px 8px;
+  background: #f2f5fb;
+  border-bottom: 1px solid #d5ddec;
+}
+.onec-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  font-size: 12px;
+  line-height: 1;
+  padding: 5px 9px;
+  border: 1px solid #c3cee4;
+  border-radius: 3px;
+  background: #fff;
+  color: #1c2a44;
+  cursor: pointer;
+  transition: background 0.12s ease, border-color 0.12s ease;
+  white-space: nowrap;
+}
+.onec-btn:hover:not(:disabled) {
+  background: #e3eaf8;
+  border-color: #7692cb;
+}
+.onec-btn:disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
+}
+.onec-btn-primary {
+  background: #0196d2;
+  border-color: #0179a8;
+  color: #ffffff;
+  font-weight: 600;
+}
+.onec-btn-primary:hover:not(:disabled) {
+  background: #0179a8;
+  border-color: #016a94;
+}
+.onec-search {
+  height: 26px;
+  border: 1px solid #c3cee4;
+  border-radius: 3px;
+  background: #fff;
+  font-size: 12.5px;
+  padding: 0 8px;
+  outline: none;
+}
+.onec-search:focus {
+  border-color: #0196d2;
+  box-shadow: 0 0 0 2px rgba(1, 150, 210, 0.22);
+}
+.onec-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 13px;
+}
+.onec-table thead th {
+  background: #e3eaf8;
+  border: 1px solid #ccd8ee;
+  font-weight: 600;
+  text-align: left;
+  padding: 5px 8px;
+  color: #194688;
+  position: sticky;
+  top: 0;
+  z-index: 1;
+}
+.onec-table tbody td {
+  border: 1px solid #e6ebf5;
+  padding: 4px 8px;
+  vertical-align: middle;
+}
+.onec-table tbody tr:hover td {
+  background: #f1f5fc;
+}
+.onec-row-selected td {
+  background: #d8e6f7 !important;
+}
+.onec-row-group td {
+  background: #eef3fb;
+  font-weight: 600;
+}
+.onec-row-total td {
+  background: #e3eaf8;
+  font-weight: 700;
+  border-top: 2px solid #7692cb;
+}
+.onec-tree-toggle {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 15px;
+  height: 15px;
+  border: 1px solid #8fa4c8;
+  border-radius: 2px;
+  background: #fff;
+  font-size: 10px;
+  line-height: 1;
+  color: #194688;
+  cursor: pointer;
+  flex-shrink: 0;
+}
+.onec-tree-toggle:hover {
+  background: #e3eaf8;
+}
+
+/* Сортируемый заголовок столбца 1С-таблиц: клик — сортировка */
+.onec-sort-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+  font: inherit;
+  color: inherit;
+  background: none;
+  border: 0;
+  padding: 0;
+  cursor: pointer;
+  user-select: none;
+  transition: color 0.12s ease;
+}
+.onec-sort-btn:hover {
+  color: #0179a8;
+}
+.onec-sort-btn[data-active="true"] {
+  color: #0196d2;
 }

@@ -1,0 +1,674 @@
+     1→   520→          </div>
+     2→   521→
+     3→   522→          {/* Множественный выбор ЛПУ */}
+     4→   523→          <div className="space-y-1.5 md:col-span-2">
+     5→   524→            <div className="flex items-center justify-between">
+     6→   525→              <Label>Привязка к ЛПУ</Label>
+     7→   526→              <span className="text-[11px] text-muted-foreground">Выбрано: {form.lpuIds.length}</span>
+     8→   527→            </div>
+     9→   528→            <div className="max-h-48 space-y-1 overflow-y-auto rounded-lg border border-border bg-white p-3">
+    10→   529→              {!lpus?.length ? (
+    11→   530→                <p className="py-2 text-center text-xs text-muted-foreground">
+    12→   531→                  Сначала добавьте ЛПУ в разделе «Справочники»
+    13→   532→                </p>
+    14→   533→              ) : (
+    15→   534→                lpus.map((l) => (
+    16→   535→                  <label
+    17→   536→                    key={l.id}
+    18→   537→                    className="flex cursor-pointer items-center gap-2.5 rounded-md px-2 py-1.5 hover:bg-sky-light/60"
+    19→   538→                  >
+    20→   539→                    <Checkbox
+    21→   540→                      checked={form.lpuIds.includes(l.id)}
+    22→   541→                      onCheckedChange={(c) => toggleLpu(l.id, c === true)}
+    23→   542→                      aria-label={`Привязать ${l.name}`}
+    24→   543→                    />
+    25→   544→                    <span className="text-sm text-brand">{l.name}</span>
+    26→   545→                    <span className="text-xs text-muted-foreground">· {l.city.name}</span>
+    27→   546→                  </label>
+    28→   547→                ))
+    29→   548→              )}
+    30→   549→            </div>
+    31→   550→            <p className="text-[11px] text-muted-foreground">
+    32→   551→              При выборе ЛПУ и незаполненном городе подставляется город первого ЛПУ
+    33→   552→            </p>
+    34→   553→          </div>
+    35→   554→
+    36→   555→          <div className="space-y-1.5 md:col-span-2">
+    37→   556→            <Label>Комментарий</Label>
+    38→   557→            <Textarea
+    39→   558→              rows={2}
+    40→   559→              value={form.comment}
+    41→   560→              onChange={(e) => setForm({ ...form, comment: e.target.value })}
+    42→   561→              placeholder="Особенности сотрудничества, заметки…"
+    43→   562→            />
+    44→   563→          </div>
+    45→   564→        </div>
+    46→   565→
+    47→   566→        <DialogFooter>
+    48→   567→          <Button variant="outline" onClick={() => onOpenChange(false)}>
+    49→   568→            Отмена
+    50→   569→          </Button>
+    51→   570→          <Button
+    52→   571→            onClick={() => save.mutate()}
+    53→   572→            disabled={!form.fullName.trim() || !form.mpId || save.isPending}
+    54→   573→            className="bg-azure hover:bg-azure-dark"
+    55→   574→          >
+    56→   575→            {save.isPending && <Loader2 className="h-4 w-4 animate-spin" strokeWidth={2} />}
+    57→   576→            {doctor ? "Сохранить" : "Добавить врача"}
+    58→   577→          </Button>
+    59→   578→        </DialogFooter>
+    60→   579→      </DialogContent>
+    61→   580→    </Dialog>
+    62→   581→  );
+    63→   582→}
+    64→   583→
+    65→   584→/* ============================================================
+    66→   585→   CRM-карточка врача (большой диалог)
+    67→   586→   ============================================================ */
+    68→   587→interface VisitFormState {
+    69→   588→  date: string;
+    70→   589→  purpose: string;
+    71→   590→  comment: string;
+    72→   591→  lpuId: string;
+    73→   592→}
+    74→   593→
+    75→   594→function DoctorCardDialog({
+    76→   595→  doctorId,
+    77→   596→  onOpenChange,
+    78→   597→}: {
+    79→   598→  doctorId: string;
+    80→   599→  onOpenChange: (o: boolean) => void;
+    81→   600→}) {
+    82→   601→  const qc = useQueryClient();
+    83→   602→  const { data: session } = useSession();
+    84→   603→  const isMP = session?.user?.role === "MP";
+    85→   604→  const { setActiveView } = useUiStore();
+    86→   605→  const [editOpen, setEditOpen] = useState(false);
+    87→   606→  const [visitFormOpen, setVisitFormOpen] = useState(false);
+    88→   607→  const [visitForm, setVisitForm] = useState<VisitFormState>({
+    89→   608→    date: todayISO(),
+    90→   609→    purpose: "",
+    91→   610→    comment: "",
+    92→   611→    lpuId: NONE,
+    93→   612→  });
+    94→   613→
+    95→   614→  const { data: card, isLoading } = useQuery<DoctorCard>({
+    96→   615→    queryKey: ["doctor-card", doctorId],
+    97→   616→    queryFn: () => api.get(`/api/app/doctors/${doctorId}`),
+    98→   617→  });
+    99→   618→
+   100→   619→  // Удаление врача — только МП
+   101→   620→  const removeDoctor = useMutation({
+   102→   621→    mutationFn: (id: string) => api.del(`/api/app/doctors/${id}`),
+   103→   622→    onSuccess: () => {
+   104→   623→      toast.success("Врач удален");
+   105→   624→      onOpenChange(false);
+   106→   625→      qc.invalidateQueries({ queryKey: ["doctors"] });
+   107→   626→      qc.invalidateQueries({ queryKey: ["doctor-card"] });
+   108→   627→      qc.invalidateQueries({ queryKey: ["dashboard"] });
+   109→   628→    },
+   110→   629→  });
+   111→   630→
+   112→   631→  // Запланировать визит
+   113→   632→  const addVisit = useMutation({
+   114→   633→    mutationFn: () =>
+   115→   634→      api.post("/api/app/visits", {
+   116→   635→        doctorId,
+   117→   636→        lpuId: visitForm.lpuId === NONE ? null : visitForm.lpuId,
+   118→   637→        date: visitForm.date,
+   119→   638→        purpose: visitForm.purpose.trim(),
+   120→   639→        comment: visitForm.comment.trim() || null,
+   121→   640→        status: "PLANNED",
+   122→   641→      }),
+   123→   642→    onSuccess: () => {
+   124→   643→      toast.success("Визит запланирован");
+   125→   644→      setVisitFormOpen(false);
+   126→   645→      setVisitForm({ date: todayISO(), purpose: "", comment: "", lpuId: NONE });
+   127→   646→      qc.invalidateQueries({ queryKey: ["doctor-card"] });
+   128→   647→      qc.invalidateQueries({ queryKey: ["visits"] });
+   129→   648→      qc.invalidateQueries({ queryKey: ["dashboard"] });
+   130→   649→    },
+   131→   650→    onError: (e: Error) => toast.error(e.message),
+   132→   651→  });
+   133→   652→
+   134→   653→  // Смена статуса визита
+   135→   654→  const setVisitStatus = useMutation({
+   136→   655→    mutationFn: ({ id, status }: { id: string; status: VisitItem["status"] }) =>
+   137→   656→      api.put(`/api/app/visits/${id}`, { status }),
+   138→   657→    onSuccess: () => {
+   139→   658→      toast.success("Статус визита обновлен");
+   140→   659→      qc.invalidateQueries({ queryKey: ["doctor-card"] });
+   141→   660→      qc.invalidateQueries({ queryKey: ["visits"] });
+   142→   661→      qc.invalidateQueries({ queryKey: ["dashboard"] });
+   143→   662→    },
+   144→   663→    onError: (e: Error) => toast.error(e.message),
+   145→   664→  });
+   146→   665→
+   147→   666→  // Удаление визита — только МП
+   148→   667→  const removeVisit = useMutation({
+   149→   668→    mutationFn: (id: string) => api.del(`/api/app/visits/${id}`),
+   150→   669→    onSuccess: () => {
+   151→   670→      toast.success("Визит удален");
+   152→   671→      qc.invalidateQueries({ queryKey: ["doctor-card"] });
+   153→   672→      qc.invalidateQueries({ queryKey: ["visits"] });
+   154→   673→      qc.invalidateQueries({ queryKey: ["dashboard"] });
+   155→   674→    },
+   156→   675→  });
+   157→   676→
+   158→   677→  const doneCount = card?.requests.filter((r) => r.doneId != null).length ?? 0;
+   159→   678→
+   160→   679→  const nextVisit = useMemo(() => {
+   161→   680→    if (!card) return null;
+   162→   681→    const start = new Date();
+   163→   682→    start.setHours(0, 0, 0, 0);
+   164→   683→    return (
+   165→   684→      [...card.visits]
+   166→   685→        .filter((v) => v.status === "PLANNED" && new Date(v.date) >= start)
+   167→   686→        .sort((a, b) => +new Date(a.date) - +new Date(b.date))[0] ?? null
+   168→   687→    );
+   169→   688→  }, [card]);
+   170→   689→
+   171→   690→  const sortedVisits = useMemo(
+   172→   691→    () => (card ? [...card.visits].sort((a, b) => +new Date(b.date) - +new Date(a.date)) : []),
+   173→   692→    [card]
+   174→   693→  );
+   175→   694→
+   176→   695→  return (
+   177→   696→    <>
+   178→   697→      <Dialog open onOpenChange={onOpenChange}>
+   179→   698→        <DialogContent className="max-h-[85vh] overflow-y-auto sm:max-w-4xl">
+   180→   699→          <DialogHeader>
+   181→   700→            <div className="flex items-start justify-between gap-3">
+   182→   701→              <div className="min-w-0 space-y-1">
+   183→   702→                <DialogTitle className="flex flex-wrap items-center gap-2 font-display text-lg text-brand">
+   184→   703→                  <span className="truncate">{card?.fullName ?? "Карточка врача"}</span>
+   185→   704→                  {card?.status && <StatusPill status={card.status} />}
+   186→   705→                </DialogTitle>
+   187→   706→                <DialogDescription className="flex flex-wrap items-center gap-x-4 gap-y-1 text-xs">
+   188→   707→                  <span className="inline-flex items-center gap-1">
+   189→   708→                    <UserRound className="h-3 w-3 text-sky" strokeWidth={2} />
+   190→   709→                    МП: {card?.mp.name ?? "—"}
+   191→   710→                  </span>
+   192→   711→                  <span className="inline-flex items-center gap-1">
+   193→   712→                    <Phone className="h-3 w-3 text-sky" strokeWidth={2} />
+   194→   713→                    {card?.phone ?? "—"}
+   195→   714→                  </span>
+   196→   715→                  <span className="inline-flex items-center gap-1">
+   197→   716→                    <Cake className="h-3 w-3 text-sky" strokeWidth={2} />
+   198→   717→                    {card?.birthDate ? fmtDate(card.birthDate) : "дата рождения не указана"}
+   199→   718→                  </span>
+   200→   719→                  <span className="inline-flex items-center gap-1">
+   201→   720→                    <MapPin className="h-3 w-3 text-sky" strokeWidth={2} />
+   202→   721→                    {card?.city?.name ?? "город не указан"}
+   203→   722→                  </span>
+   204→   723→                </DialogDescription>
+   205→   724→              </div>
+   206→   725→              {isMP && card && (
+   207→   726→                <DeleteButton
+   208→   727→                  title={`Удалить врача «${card.fullName}»?`}
+   209→   728→                  description="Будут удалены карточка врача, привязки к ЛПУ, визиты и заявки. Действие будет зафиксировано в журнале аудита."
+   210→   729→                  onConfirm={async () => {
+   211→   730→                    try {
+   212→   731→                      await removeDoctor.mutateAsync(card.id);
+   213→   732→                    } catch (e) {
+   214→   733→                      toast.error((e as Error).message);
+   215→   734→                    }
+   216→   735→                  }}
+   217→   736→                />
+   218→   737→              )}
+   219→   738→            </div>
+   220→   739→          </DialogHeader>
+   221→   740→
+   222→   741→          {isLoading || !card ? (
+   223→   742→            <div className="space-y-3 py-4">
+   224→   743→              <Skeleton className="h-20 rounded-lg" />
+   225→   744→              <Skeleton className="h-40 rounded-lg" />
+   226→   745→            </div>
+   227→   746→          ) : (
+   228→   747→            <>
+   229→   748→              {/* Quick-stats */}
+   230→   749→              <div className="grid grid-cols-3 gap-3">
+   231→   750→                <StatBox
+   232→   751→                  icon={<FileText className="h-3.5 w-3.5 text-sky" strokeWidth={2} />}
+   233→   752→                  label="Всего заявок"
+   234→   753→                  value={card.requests.length}
+   235→   754→                />
+   236→   755→                <StatBox
+   237→   756→                  icon={<CheckCircle2 className="h-3.5 w-3.5 text-sky" strokeWidth={2} />}
+   238→   757→                  label="Выполнено"
+   239→   758→                  value={doneCount}
+   240→   759→                />
+   241→   760→                <StatBox
+   242→   761→                  icon={<CalendarDays className="h-3.5 w-3.5 text-sky" strokeWidth={2} />}
+   243→   762→                  label="Ближайший визит"
+   244→   763→                  value={nextVisit ? fmtDate(nextVisit.date) : "—"}
+   245→   764→                />
+   246→   765→              </div>
+   247→   766→
+   248→   767→              <Tabs defaultValue="profile" className="mt-1">
+   249→   768→                <TabsList className="h-10 bg-sky-light/60">
+   250→   769→                  <TabsTrigger value="profile" className="px-4">Профиль и привязки</TabsTrigger>
+   251→   770→                  <TabsTrigger value="visits" className="px-4">Визиты и коммуникации</TabsTrigger>
+   252→   771→                  <TabsTrigger value="requests" className="px-4">Заявки ({card.requests.length})</TabsTrigger>
+   253→   772→                </TabsList>
+   254→   773→
+   255→   774→                {/* —— Вкладка: Профиль и привязки —— */}
+   256→   775→                <TabsContent value="profile" className="mt-4 space-y-5">
+   257→   776→                  <div className="grid gap-x-6 gap-y-3 sm:grid-cols-2">
+   258→   777→                    <Field label="ФИО" value={card.fullName} />
+   259→   778→                    <Field label="Телефон" value={card.phone ?? "—"} />
+   260→   779→                    <Field label="Дата рождения" value={card.birthDate ? fmtDate(card.birthDate) : "—"} />
+   261→   780→                    <Field label="Город" value={card.city?.name ?? "—"} />
+   262→   781→                    <Field label="Курирующий МП" value={card.mp.name} />
+   263→   782→                    <Field label="Статус сотрудничества" value={card.status?.name ?? "—"} />
+   264→   783→                    <Field
+   265→   784→                      label="Комментарий"
+   266→   785→                      value={card.comment ?? "—"}
+   267→   786→                      className="sm:col-span-2"
+   268→   787→                    />
+   269→   788→                  </div>
+   270→   789→
+   271→   790→                  <div>
+   272→   791→                    <div className="mb-2 flex items-center justify-between">
+   273→   792→                      <p className="text-sm font-semibold text-brand">Привязки к ЛПУ</p>
+   274→   793→                      <Button
+   275→   794→                        size="sm"
+   276→   795→                        variant="outline"
+   277→   796→                        className="gap-1.5 border-azure/40 text-azure hover:bg-azure hover:text-white"
+   278→   797→                        onClick={() => setEditOpen(true)}
+   279→   798→                      >
+   280→   799→                        <Pencil className="h-3.5 w-3.5" strokeWidth={2} /> Редактировать
+   281→   800→                      </Button>
+   282→   801→                    </div>
+   283→   802→                    <div className="flex flex-wrap gap-1.5">
+   284→   803→                      {card.lpus.length === 0 ? (
+   285→   804→                        <span className="text-xs italic text-muted-foreground">
+   286→   805→                          ЛПУ не привязаны — нажмите «Редактировать»
+   287→   806→                        </span>
+   288→   807→                      ) : (
+   289→   808→                        card.lpus.map(({ lpu }) => (
+   290→   809→                          <span
+   291→   810→                            key={lpu.id}
+   292→   811→                            className="inline-flex items-center gap-1 rounded-full bg-sky-light px-2.5 py-1 text-xs text-brand"
+   293→   812→                          >
+   294→   813→                            <Building2 className="h-3 w-3 text-sky" strokeWidth={2} />
+   295→   814→                            {lpu.name}
+   296→   815→                            <span className="text-muted-foreground">· {lpu.city.name}</span>
+   297→   816→                          </span>
+   298→   817→                        ))
+   299→   818→                      )}
+   300→   819→                    </div>
+   301→   820→                  </div>
+   302→   821→
+   303→   822→                  {/* Задел этапа 2: бонусная программа */}
+   304→   823→                  <div className="placeholder-section rounded-xl border-2 border-dashed border-sky/50 bg-soft p-5">
+   305→   824→                    <div className="mb-4 flex items-center gap-2">
+   306→   825→                      <Gift className="h-4 w-4 text-sky" strokeWidth={2} />
+   307→   826→                      <p className="font-display text-sm font-semibold text-muted-foreground">
+   308→   827→                        Бонусная программа (этап 2)
+   309→   828→                      </p>
+   310→   829→                      <Badge
+   311→   830→                        variant="outline"
+   312→   831→                        className="border-terra/60 bg-terra-light text-[10px] text-terra-dark"
+   313→   832→                      >
+   314→   833→                        Задел
+   315→   834→                      </Badge>
+   316→   835→                    </div>
+   317→   836→                    <div className="grid gap-4 sm:grid-cols-3">
+   318→   837→                      <div className="space-y-1.5">
+   319→   838→                        <Label className="text-xs text-muted-foreground">Тип программы</Label>
+   320→   839→                        <Select disabled value={card.bonusType ?? ""}>
+   321→   840→                          <SelectTrigger className="bg-white text-muted-foreground">
+   322→   841→                            <SelectValue placeholder="Не выбран" />
+   323→   842→                          </SelectTrigger>
+   324→   843→                          <SelectContent>
+   325→   844→                            <SelectItem value="CASH">Денежный</SelectItem>
+   326→   845→                            <SelectItem value="ACCUMULATIVE">Накопительный</SelectItem>
+   327→   846→                          </SelectContent>
+   328→   847→                        </Select>
+   329→   848→                      </div>
+   330→   849→                      <div className="space-y-1.5">
+   331→   850→                        <Label className="text-xs text-muted-foreground">Текущий баланс</Label>
+   332→   851→                        <Input
+   333→   852→                          disabled
+   334→   853→                          readOnly
+   335→   854→                          value={String(card.bonusBalance ?? 0)}
+   336→   855→                          className="bg-white text-muted-foreground"
+   337→   856→                        />
+   338→   857→                      </div>
+   339→   858→                      <div className="space-y-1.5">
+   340→   859→                        <Label className="text-xs text-muted-foreground">Реквизиты для выплат</Label>
+   341→   860→                        <Input
+   342→   861→                          disabled
+   343→   862→                          readOnly
+   344→   863→                          value={card.payoutDetails ?? ""}
+   345→   864→                          placeholder="Не указаны"
+   346→   865→                          className="bg-white text-muted-foreground"
+   347→   866→                        />
+   348→   867→                      </div>
+   349→   868→                    </div>
+   350→   869→                    <p className="mt-3 text-[11px] text-muted-foreground">
+   351→   870→                      Раздел будет активирован на этапе 2 — учет бонусных программ и выплат НВ.
+   352→   871→                    </p>
+   353→   872→                  </div>
+   354→   873→                </TabsContent>
+   355→   874→
+   356→   875→                {/* —— Вкладка: Визиты и коммуникации —— */}
+   357→   876→                <TabsContent value="visits" className="mt-4 space-y-4">
+   358→   877→                  <div className="flex flex-wrap items-center justify-between gap-2">
+   359→   878→                    <p className="text-sm text-muted-foreground">История визитов — всего {card.visits.length}</p>
+   360→   879→                    <Button
+   361→   880→                      size="sm"
+   362→   881→                      className="gap-1.5 bg-azure hover:bg-azure-dark"
+   363→   882→                      onClick={() => setVisitFormOpen((o) => !o)}
+   364→   883→                    >
+   365→   884→                      <CalendarPlus className="h-4 w-4" strokeWidth={2} /> Запланировать визит
+   366→   885→                    </Button>
+   367→   886→                  </div>
+   368→   887→
+   369→   888→                  {visitFormOpen && (
+   370→   889→                    <div className="space-y-3 rounded-lg border border-azure/30 bg-sky-light/40 p-4">
+   371→   890→                      <div className="grid gap-3 sm:grid-cols-3">
+   372→   891→                        <div className="space-y-1.5">
+   373→   892→                          <Label className="text-xs">
+   374→   893→                            Дата визита <span className="text-terra-dark">*</span>
+   375→   894→                          </Label>
+   376→   895→                          <Input
+   377→   896→                            type="date"
+   378→   897→                            value={visitForm.date}
+   379→   898→                            onChange={(e) => setVisitForm({ ...visitForm, date: e.target.value })}
+   380→   899→                          />
+   381→   900→                        </div>
+   382→   901→                        <div className="space-y-1.5 sm:col-span-2">
+   383→   902→                          <Label className="text-xs">
+   384→   903→                            Цель визита <span className="text-terra-dark">*</span>
+   385→   904→                          </Label>
+   386→   905→                          <Input
+   387→   906→                            value={visitForm.purpose}
+   388→   907→                            onChange={(e) => setVisitForm({ ...visitForm, purpose: e.target.value })}
+   389→   908→                            placeholder="Например: презентация новой линейки МРТ"
+   390→   909→                          />
+   391→   910→                        </div>
+   392→   911→                      </div>
+   393→   912→                      <div className="space-y-1.5">
+   394→   913→                        <Label className="text-xs">ЛПУ</Label>
+   395→   914→                        <Select
+   396→   915→                          value={visitForm.lpuId}
+   397→   916→                          onValueChange={(v) => setVisitForm({ ...visitForm, lpuId: v })}
+   398→   917→                        >
+   399→   918→                          <SelectTrigger className="bg-white">
+   400→   919→                            <SelectValue placeholder="Выберите ЛПУ (необязательно)" />
+   401→   920→                          </SelectTrigger>
+   402→   921→                          <SelectContent>
+   403→   922→                            <SelectItem value={NONE}>Без привязки к ЛПУ</SelectItem>
+   404→   923→                            {card.lpus.map(({ lpu }) => (
+   405→   924→                              <SelectItem key={lpu.id} value={lpu.id}>
+   406→   925→                                {lpu.name} · {lpu.city.name}
+   407→   926→                              </SelectItem>
+   408→   927→                            ))}
+   409→   928→                          </SelectContent>
+   410→   929→                        </Select>
+   411→   930→                      </div>
+   412→   931→                      <div className="space-y-1.5">
+   413→   932→                        <Label className="text-xs">Комментарий</Label>
+   414→   933→                        <Textarea
+   415→   934→                          rows={2}
+   416→   935→                          value={visitForm.comment}
+   417→   936→                          onChange={(e) => setVisitForm({ ...visitForm, comment: e.target.value })}
+   418→   937→                          placeholder="Договоренности, заметки о встрече…"
+   419→   938→                        />
+   420→   939→                      </div>
+   421→   940→                      <div className="flex justify-end gap-2">
+   422→   941→                        <Button size="sm" variant="ghost" onClick={() => setVisitFormOpen(false)}>
+   423→   942→                          Отмена
+   424→   943→                        </Button>
+   425→   944→                        <Button
+   426→   945→                          size="sm"
+   427→   946→                          className="bg-azure hover:bg-azure-dark"
+   428→   947→                          disabled={!visitForm.date || !visitForm.purpose.trim() || addVisit.isPending}
+   429→   948→                          onClick={() => addVisit.mutate()}
+   430→   949→                        >
+   431→   950→                          {addVisit.isPending && <Loader2 className="h-4 w-4 animate-spin" strokeWidth={2} />}
+   432→   951→                          Запланировать
+   433→   952→                        </Button>
+   434→   953→                      </div>
+   435→   954→                    </div>
+   436→   955→                  )}
+   437→   956→
+   438→   957→                  {sortedVisits.length === 0 ? (
+   439→   958→                    <EmptyState
+   440→   959→                      title="Визитов пока нет"
+   441→   960→                      hint="Запланируйте первую встречу с врачом — она появится в таймлайне"
+   442→   961→                    />
+   443→   962→                  ) : (
+   444→   963→                    <ol className="relative ml-1 max-h-96 space-y-3 overflow-y-auto border-l border-sky/40 pl-5 pr-1">
+   445→   964→                      {sortedVisits.map((v) => (
+   446→   965→                        <li key={v.id} className="relative">
+   447→   966→                          <span
+   448→   967→                            className={`absolute -left-[26px] top-2.5 h-2.5 w-2.5 rounded-full ring-4 ring-white ${
+   449→   968→                              v.status === "CONDUCTED" ? "bg-brand" : v.status === "CANCELLED" ? "bg-terra" : "bg-azure"
+   450→   969→                            }`}
+   451→   970→                          />
+   452→   971→                          <div className="rounded-lg border border-border bg-white p-3">
+   453→   972→                            <div className="flex flex-wrap items-center justify-between gap-2">
+   454→   973→                              <span className="font-display text-sm font-semibold text-brand">
+   455→   974→                                {fmtDate(v.date)}
+   456→   975→                              </span>
+   457→   976→                              <StatusChip status={v.status} />
+   458→   977→                            </div>
+   459→   978→                            <p className="mt-1 text-sm">{v.purpose}</p>
+   460→   979→                            {v.comment && (
+   461→   980→                              <p className="mt-1 text-xs text-muted-foreground">{v.comment}</p>
+   462→   981→                            )}
+   463→   982→                            <div className="mt-1.5 flex items-center gap-3 text-xs text-muted-foreground">
+   464→   983→                              {v.lpu && (
+   465→   984→                                <span className="inline-flex items-center gap-1">
+   466→   985→                                  <Building2 className="h-3 w-3 text-sky" strokeWidth={2} />
+   467→   986→                                  {v.lpu.name}
+   468→   987→                                </span>
+   469→   988→                              )}
+   470→   989→                              {v.mp && <span>МП: {v.mp.name}</span>}
+   471→   990→                            </div>
+   472→   991→                            {(v.status === "PLANNED" || isMP) && (
+   473→   992→                              <div className="mt-2 flex flex-wrap items-center gap-1.5">
+   474→   993→                                {v.status === "PLANNED" && (
+   475→   994→                                  <>
+   476→   995→                                    <Button
+   477→   996→                                      size="sm"
+   478→   997→                                      variant="outline"
+   479→   998→                                      className="h-7 gap-1 border-brand/30 px-2 text-[11px] text-brand hover:bg-brand hover:text-white"
+   480→   999→                                      onClick={() => setVisitStatus.mutate({ id: v.id, status: "CONDUCTED" })}
+   481→  1000→                                    >
+   482→  1001→                                      <CheckCircle2 className="h-3 w-3" strokeWidth={2} /> Проведен
+   483→  1002→                                    </Button>
+   484→  1003→                                    <Button
+   485→  1004→                                      size="sm"
+   486→  1005→                                      variant="outline"
+   487→  1006→                                      className="h-7 gap-1 border-terra/50 px-2 text-[11px] text-terra-dark hover:bg-terra hover:text-white"
+   488→  1007→                                      onClick={() => setVisitStatus.mutate({ id: v.id, status: "CANCELLED" })}
+   489→  1008→                                    >
+   490→  1009→                                      <XCircle className="h-3 w-3" strokeWidth={2} /> Отменен
+   491→  1010→                                    </Button>
+   492→  1011→                                  </>
+   493→  1012→                                )}
+   494→  1013→                                {isMP && (
+   495→  1014→                                  <DeleteButton
+   496→  1015→                                    title="Удалить визит?"
+   497→  1016→                                    description="Запись о визите будет удалена и зафиксирована в журнале аудита."
+   498→  1017→                                    onConfirm={async () => {
+   499→  1018→                                      try {
+   500→  1019→                                        await removeVisit.mutateAsync(v.id);
+   501→  1020→                                      } catch (e) {
+   502→  1021→                                        toast.error((e as Error).message);
+   503→  1022→                                      }
+   504→  1023→                                    }}
+   505→  1024→                                  />
+   506→  1025→                                )}
+   507→  1026→                              </div>
+   508→  1027→                            )}
+   509→  1028→                          </div>
+   510→  1029→                        </li>
+   511→  1030→                      ))}
+   512→  1031→                    </ol>
+   513→  1032→                  )}
+   514→  1033→                </TabsContent>
+   515→  1034→
+   516→  1035→                {/* —— Вкладка: Заявки —— */}
+   517→  1036→                <TabsContent value="requests" className="mt-4 space-y-3">
+   518→  1037→                  <div className="flex flex-wrap items-center justify-between gap-2">
+   519→  1038→                    <p className="text-sm text-muted-foreground">
+   520→  1039→                      Направления, зарегистрированные этим НВ — всего {card.requests.length}
+   521→  1040→                    </p>
+   522→  1041→                    <Button
+   523→  1042→                      size="sm"
+   524→  1043→                      variant="outline"
+   525→  1044→                      className="gap-1.5 border-azure/40 text-azure hover:bg-azure hover:text-white"
+   526→  1045→                      onClick={() => {
+   527→  1046→                        onOpenChange(false);
+   528→  1047→                        setActiveView("requests");
+   529→  1048→                      }}
+   530→  1049→                    >
+   531→  1050→                      К заявкам <ArrowRight className="h-3.5 w-3.5" strokeWidth={2} />
+   532→  1051→                    </Button>
+   533→  1052→                  </div>
+   534→  1053→                  {card.requests.length === 0 ? (
+   535→  1054→                    <EmptyState title="Заявок нет" hint="Здесь появятся направления этого врача" />
+   536→  1055→                  ) : (
+   537→  1056→                    <div className="max-h-72 overflow-y-auto rounded-lg border border-border">
+   538→  1057→                      <Table>
+   539→  1058→                        <TableHeader className="sticky top-0 z-10 bg-white">
+   540→  1059→                          <TableRow className="hover:bg-transparent">
+   541→  1060→                            <TableHead>Дата</TableHead>
+   542→  1061→                            <TableHead>Пациент</TableHead>
+   543→  1062→                            <TableHead>Назначено</TableHead>
+   544→  1063→                            <TableHead>Сделано</TableHead>
+   545→  1064→                          </TableRow>
+   546→  1065→                        </TableHeader>
+   547→  1066→                        <TableBody>
+   548→  1067→                          {card.requests.map((r) => (
+   549→  1068→                            <TableRow key={r.id}>
+   550→  1069→                              <TableCell className="whitespace-nowrap text-muted-foreground">
+   551→  1070→                                {fmtDate(r.date)}
+   552→  1071→                              </TableCell>
+   553→  1072→                              <TableCell className="font-medium text-brand">{r.patientName}</TableCell>
+   554→  1073→                              <TableCell className="text-sm">{r.assigned?.name ?? "—"}</TableCell>
+   555→  1074→                              <TableCell>
+   556→  1075→                                {r.done ? (
+   557→  1076→                                  <span className="text-sm">{r.done.name}</span>
+   558→  1077→                                ) : (
+   559→  1078→                                  <Badge className="border-transparent bg-terra-light text-[10px] text-terra-dark hover:bg-terra-light">
+   560→  1079→                                    Ожидает
+   561→  1080→                                  </Badge>
+   562→  1081→                                )}
+   563→  1082→                              </TableCell>
+   564→  1083→                            </TableRow>
+   565→  1084→                          ))}
+   566→  1085→                        </TableBody>
+   567→  1086→                      </Table>
+   568→  1087→                    </div>
+   569→  1088→                  )}
+   570→  1089→                </TabsContent>
+   571→  1090→              </Tabs>
+   572→  1091→            </>
+   573→  1092→          )}
+   574→  1093→        </DialogContent>
+   575→  1094→      </Dialog>
+   576→  1095→
+   577→  1096→      {/* Диалог редактирования поверх карточки (монтируется при открытии) */}
+   578→  1097→      {editOpen && card && (
+   579→  1098→        <DoctorFormDialog doctor={card} onOpenChange={setEditOpen} />
+   580→  1099→      )}
+   581→  1100→    </>
+   582→  1101→  );
+   583→  1102→}
+   584→  1103→
+   585→  1104→/* ============================================================
+   586→  1105→   Вспомогательные компоненты
+   587→  1106→   ============================================================ */
+   588→  1107→
+   589→  1108→/** Бейдж статуса сотрудничества (цвет из справочника) */
+   590→  1109→function StatusPill({ status }: { status: CooperationStatus }) {
+   591→  1110→  return (
+   592→  1111→    <span
+   593→  1112→      className="inline-flex shrink-0 items-center gap-1 rounded-full border px-2 py-0.5 text-[10px] font-semibold"
+   594→  1113→      style={{ borderColor: `${status.color}66`, color: status.color }}
+   595→  1114→    >
+   596→  1115→      <span className="h-1.5 w-1.5 rounded-full" style={{ backgroundColor: status.color }} />
+   597→  1116→      {status.name}
+   598→  1117→    </span>
+   599→  1118→  );
+   600→  1119→}
+   601→  1120→
+   602→  1121→/** Селект фильтра с опцией «все» */
+   603→  1122→function FilterSelect({
+   604→  1123→  label,
+   605→  1124→  value,
+   606→  1125→  onChange,
+   607→  1126→  placeholder,
+   608→  1127→  items,
+   609→  1128→}: {
+   610→  1129→  label: string;
+   611→  1130→  value: string;
+   612→  1131→  onChange: (v: string) => void;
+   613→  1132→  placeholder: string;
+   614→  1133→  items: { value: string; label: string }[];
+   615→  1134→}) {
+   616→  1135→  return (
+   617→  1136→    <div className="space-y-1.5">
+   618→  1137→      <Label className="text-xs text-muted-foreground">{label}</Label>
+   619→  1138→      <Select value={value || ALL} onValueChange={(v) => onChange(v === ALL ? "" : v)}>
+   620→  1139→        <SelectTrigger className="w-44 bg-white">
+   621→  1140→          <SelectValue placeholder={placeholder} />
+   622→  1141→        </SelectTrigger>
+   623→  1142→        <SelectContent>
+   624→  1143→          <SelectItem value={ALL}>{placeholder}</SelectItem>
+   625→  1144→          {items.map((i) => (
+   626→  1145→            <SelectItem key={i.value} value={i.value}>
+   627→  1146→              {i.label}
+   628→  1147→            </SelectItem>
+   629→  1148→          ))}
+   630→  1149→        </SelectContent>
+   631→  1150→      </Select>
+   632→  1151→    </div>
+   633→  1152→  );
+   634→  1153→}
+   635→  1154→
+   636→  1155→/** Поле профиля «подпись — значение» */
+   637→  1156→function Field({
+   638→  1157→  label,
+   639→  1158→  value,
+   640→  1159→  className,
+   641→  1160→}: {
+   642→  1161→  label: string;
+   643→  1162→  value: React.ReactNode;
+   644→  1163→  className?: string;
+   645→  1164→}) {
+   646→  1165→  return (
+   647→  1166→    <div className={className}>
+   648→  1167→      <p className="text-[10px] font-semibold uppercase tracking-wider text-sky">{label}</p>
+   649→  1168→      <p className="mt-0.5 break-words text-sm text-brand">{value}</p>
+   650→  1169→    </div>
+   651→  1170→  );
+   652→  1171→}
+   653→  1172→
+   654→  1173→/** Мини-плитка quick-stats */
+   655→  1174→function StatBox({
+   656→  1175→  icon,
+   657→  1176→  label,
+   658→  1177→  value,
+   659→  1178→}: {
+   660→  1179→  icon: React.ReactNode;
+   661→  1180→  label: string;
+   662→  1181→  value: React.ReactNode;
+   663→  1182→}) {
+   664→  1183→  return (
+   665→  1184→    <div className="rounded-lg bg-sky-light/60 px-3 py-2.5">
+   666→  1185→      <div className="flex items-center gap-1.5 text-[11px] text-muted-foreground">
+   667→  1186→        {icon}
+   668→  1187→        {label}
+   669→  1188→      </div>
+   670→  1189→      <p className="mt-0.5 truncate font-display text-lg font-bold text-brand">{value}</p>
+   671→  1190→    </div>
+   672→  1191→  );
+   673→  1192→}
+   674→  1193→

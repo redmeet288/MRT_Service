@@ -1,0 +1,1200 @@
+     1→     1→"use client";
+     2→     2→
+     3→     3→// ============================================================
+     4→     4→// Справочники — в стиле «1С:Предприятие» (по образцу заказчика):
+     5→     5→// окно списка с панелью инструментов [Создать][Изменить][Удалить],
+     6→     6→// поиск справа, таблица с желтой шапкой, подсветка выбранной строки.
+     7→     7→// Импорт/экспорт — непосредственно в справочнике (DictImportExport).
+     8→     8→// ============================================================
+     9→     9→
+    10→    10→import { useMemo, useState } from "react";
+    11→    11→import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+    12→    12→import { useSession } from "next-auth/react";
+    13→    13→import { toast } from "sonner";
+    14→    14→import { api } from "@/lib/api-client";
+    15→    15→import type {
+    16→    16→  City,
+    17→    17→  CityData,
+    18→    18→  CooperationStatus,
+    19→    19→  NomenclatureItem,
+    20→    20→  Role,
+    21→    21→  SpecializationItem,
+    22→    22→} from "@/lib/types";
+    23→    23→import { useUiStore } from "@/store/ui";
+    24→    24→import {
+    25→    25→  applySort,
+    26→    26→  cycleSort,
+    27→    27→  DeleteButton,
+    28→    28→  EmptyState,
+    29→    29→  RowsSkeleton,
+    30→    30→  SortableTh,
+    31→    31→  type SortState,
+    32→    32→} from "@/components/shared/ui-bits";
+    33→    33→import { DictImportExport } from "@/components/shared/dict-io";
+    34→    34→import { Button } from "@/components/ui/button";
+    35→    35→import { Input } from "@/components/ui/input";
+    36→    36→import { Label } from "@/components/ui/label";
+    37→    37→import { Badge } from "@/components/ui/badge";
+    38→    38→import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
+    39→    39→import {
+    40→    40→  Dialog,
+    41→    41→  DialogContent,
+    42→    42→  DialogDescription,
+    43→    43→  DialogFooter,
+    44→    44→  DialogHeader,
+    45→    45→  DialogTitle,
+    46→    46→} from "@/components/ui/dialog";
+    47→    47→import {
+    48→    48→  Select,
+    49→    49→  SelectContent,
+    50→    50→  SelectItem,
+    51→    51→  SelectTrigger,
+    52→    52→  SelectValue,
+    53→    53→} from "@/components/ui/select";
+    54→    54→import { Plus, Pencil, MapPin, Building2, ListChecks, Stethoscope, Tag } from "lucide-react";
+    55→    55→import { cn } from "@/lib/utils";
+    56→    56→
+    57→    57→type DictTab = "cities" | "lpus" | "nomenclature" | "specializations" | "statuses";
+    58→    58→
+    59→    59→/** Сессия next-auth не содержит role — приводим к расширенному типу (как в doctors-view) */
+    60→    60→type SessionUserWithRole = { uid?: string; role?: Role } | undefined;
+    61→    61→
+    62→    62→export function DictionariesView() {
+    63→    63→  // Начальная вкладка — одноразовый payload с дашборда (consumeDictTab), БЕЗ useEffect
+    64→    64→  const [tab, setTab] = useState<DictTab>(
+    65→    65→    () => useUiStore.getState().consumeDictTab() ?? "cities"
+    66→    66→  );
+    67→    67→
+    68→    68→  return (
+    69→    69→    <Tabs value={tab} onValueChange={(v) => setTab(v as DictTab)} className="space-y-4">
+    70→    70→      <TabsList className="bg-white border border-border h-10 p-1 rounded-lg">
+    71→    71→        <TabsTrigger value="cities" className="gap-2 px-4 data-[state=active]:bg-sky-light data-[state=active]:text-brand">
+    72→    72→          <MapPin className="h-4 w-4" strokeWidth={2} /> Города
+    73→    73→        </TabsTrigger>
+    74→    74→        <TabsTrigger value="lpus" className="gap-2 px-4 data-[state=active]:bg-sky-light data-[state=active]:text-brand">
+    75→    75→          <Building2 className="h-4 w-4" strokeWidth={2} /> ЛПУ
+    76→    76→        </TabsTrigger>
+    77→    77→        <TabsTrigger value="nomenclature" className="gap-2 px-4 data-[state=active]:bg-sky-light data-[state=active]:text-brand">
+    78→    78→          <ListChecks className="h-4 w-4" strokeWidth={2} /> Номенклатура
+    79→    79→        </TabsTrigger>
+    80→    80→        <TabsTrigger value="specializations" className="gap-2 px-4 data-[state=active]:bg-sky-light data-[state=active]:text-brand">
+    81→    81→          <Stethoscope className="h-4 w-4" strokeWidth={2} /> Специализация врача
+    82→    82→        </TabsTrigger>
+    83→    83→        <TabsTrigger value="statuses" className="gap-2 px-4 data-[state=active]:bg-sky-light data-[state=active]:text-brand">
+    84→    84→          <Tag className="h-4 w-4" strokeWidth={2} /> Статусы
+    85→    85→        </TabsTrigger>
+    86→    86→      </TabsList>
+    87→    87→
+    88→    88→      <TabsContent value="cities"><CitiesTab /></TabsContent>
+    89→    89→      <TabsContent value="lpus"><LpusTab /></TabsContent>
+    90→    90→      <TabsContent value="nomenclature"><NomenclatureTab /></TabsContent>
+    91→    91→      <TabsContent value="specializations"><SpecializationsTab /></TabsContent>
+    92→    92→      <TabsContent value="statuses"><StatusesTab /></TabsContent>
+    93→    93→    </Tabs>
+    94→    94→  );
+    95→    95→}
+    96→    96→
+    97→    97→/* ============ Каркас окна списка в стиле 1С ============ */
+    98→    98→
+    99→    99→function DictWindow({
+   100→   100→  icon,
+   101→   101→  title,
+   102→   102→  count,
+   103→   103→  toolbar,
+   104→   104→  children,
+   105→   105→}: {
+   106→   106→  icon: React.ReactNode;
+   107→   107→  title: string;
+   108→   108→  count: number;
+   109→   109→  toolbar: React.ReactNode;
+   110→   110→  children: React.ReactNode;
+   111→   111→}) {
+   112→   112→  return (
+   113→   113→    <div className="onec-window">
+   114→   114→      <div className="onec-titlebar">
+   115→   115→        {icon}
+   116→   116→        <span className="text-[13px] font-semibold text-[#1c1c1c]">{title}</span>
+   117→   117→        <span className="ml-auto text-[11px] text-muted-foreground">Записей: {count}</span>
+   118→   118→      </div>
+   119→   119→      <div className="onec-toolbar">{toolbar}</div>
+   120→   120→      {children}
+   121→   121→    </div>
+   122→   122→  );
+   123→   123→}
+   124→   124→
+   125→   125→/** Кнопки тулбара: Создать / Изменить (+ слот удаления для МП) */
+   126→   126→function DictCrudButtons({
+   127→   127→  onCreate,
+   128→   128→  onEdit,
+   129→   129→  canEdit,
+   130→   130→  deleteSlot,
+   131→   131→}: {
+   132→   132→  onCreate: () => void;
+   133→   133→  onEdit: () => void;
+   134→   134→  canEdit: boolean;
+   135→   135→  deleteSlot?: React.ReactNode;
+   136→   136→}) {
+   137→   137→  return (
+   138→   138→    <>
+   139→   139→      <button type="button" className="onec-btn onec-btn-primary" onClick={onCreate}>
+   140→   140→        <Plus className="h-3.5 w-3.5" strokeWidth={2} /> Создать
+   141→   141→      </button>
+   142→   142→      <button type="button" className="onec-btn" onClick={onEdit} disabled={!canEdit}>
+   143→   143→        <Pencil className="h-3.5 w-3.5" strokeWidth={2} /> Изменить
+   144→   144→      </button>
+   145→   145→      {deleteSlot}
+   146→   146→      <div className="mx-1 h-5 w-px bg-[#d9d9d9]" aria-hidden="true" />
+   147→   147→    </>
+   148→   148→  );
+   149→   149→}
+   150→   150→
+   151→   151→/** Поиск справа в тулбаре (клиентская фильтрация по названию) */
+   152→   152→function OnecSearch({
+   153→   153→  value,
+   154→   154→  onChange,
+   155→   155→  placeholder,
+   156→   156→}: {
+   157→   157→  value: string;
+   158→   158→  onChange: (v: string) => void;
+   159→   159→  placeholder: string;
+   160→   160→}) {
+   161→   161→  return (
+   162→   162→    <input
+   163→   163→      type="search"
+   164→   164→      className="onec-search ml-auto w-44 sm:w-56"
+   165→   165→      value={value}
+   166→   166→      onChange={(e) => onChange(e.target.value)}
+   167→   167→      placeholder={placeholder}
+   168→   168→      aria-label={placeholder}
+   169→   169→    />
+   170→   170→  );
+   171→   171→}
+   172→   172→
+   173→   173→/* ============ Города ============ */
+   174→   174→
+   175→   175→type CityDialogState = { mode: "create" } | { mode: "edit"; city: City } | null;
+   176→   176→
+   177→   177→function CitiesTab() {
+   178→   178→  const qc = useQueryClient();
+   179→   179→  const { data: session } = useSession();
+   180→   180→  const isMP = (session?.user as SessionUserWithRole)?.role === "MP";
+   181→   181→  const [selectedId, setSelectedId] = useState<string | null>(null);
+   182→   182→  const [search, setSearch] = useState("");
+   183→   183→  const [sort, setSort] = useState<SortState | null>(null);
+   184→   184→  const [dialog, setDialog] = useState<CityDialogState>(null);
+   185→   185→
+   186→   186→  const { data: cities, isLoading } = useQuery<City[]>({
+   187→   187→    queryKey: ["cities"],
+   188→   188→    queryFn: () => api.get("/api/app/cities"),
+   189→   189→  });
+   190→   190→
+   191→   191→  const filtered = useMemo(() => {
+   192→   192→    const q = search.trim().toLowerCase();
+   193→   193→    const list = cities ?? [];
+   194→   194→    return q ? list.filter((c) => c.name.toLowerCase().includes(q)) : list;
+   195→   195→  }, [cities, search]);
+   196→   196→
+   197→   197→  const sorted = useMemo(
+   198→   198→    () =>
+   199→   199→      applySort(filtered, sort, (c, f) => {
+   200→   200→        switch (f) {
+   201→   201→          case "name":
+   202→   202→            return c.name;
+   203→   203→          case "lpus":
+   204→   204→            return c._count?.lpus ?? 0;
+   205→   205→          case "doctors":
+   206→   206→            return c._count?.doctors ?? 0;
+   207→   207→          default:
+   208→   208→            return null;
+   209→   209→        }
+   210→   210→      }),
+   211→   211→    [filtered, sort]
+   212→   212→  );
+   213→   213→
+   214→   214→  const selected = (cities ?? []).find((c) => c.id === selectedId) ?? null;
+   215→   215→
+   216→   216→  const remove = useMutation({
+   217→   217→    mutationFn: (id: string) => api.del(`/api/app/cities?id=${id}`),
+   218→   218→    onSuccess: () => {
+   219→   219→      toast.success("Город удален");
+   220→   220→      setSelectedId(null);
+   221→   221→      qc.invalidateQueries({ queryKey: ["cities"] });
+   222→   222→    },
+   223→   223→    onError: (e: Error) => toast.error(e.message),
+   224→   224→  });
+   225→   225→
+   226→   226→  return (
+   227→   227→    <>
+   228→   228→      <DictWindow
+   229→   229→        icon={<MapPin className="h-4 w-4 text-sky" strokeWidth={2} />}
+   230→   230→        title="Города"
+   231→   231→        count={filtered.length}
+   232→   232→        toolbar={
+   233→   233→          <>
+   234→   234→            <DictCrudButtons
+   235→   235→              onCreate={() => setDialog({ mode: "create" })}
+   236→   236→              onEdit={() => selected && setDialog({ mode: "edit", city: selected })}
+   237→   237→              canEdit={!!selected}
+   238→   238→              deleteSlot={
+   239→   239→                isMP ? (
+   240→   240→                  <DeleteButton
+   241→   241→                    disabled={!selected}
+   242→   242→                    title={`Удалить город «${selected?.name ?? ""}»?`}
+   243→   243→                    onConfirm={() => {
+   244→   244→                      if (selected) remove.mutateAsync(selected.id).catch(() => undefined);
+   245→   245→                    }}
+   246→   246→                  />
+   247→   247→                ) : undefined
+   248→   248→              }
+   249→   249→            />
+   250→   250→            <DictImportExport kind="cities" />
+   251→   251→            <OnecSearch value={search} onChange={setSearch} placeholder="Поиск по названию города…" />
+   252→   252→          </>
+   253→   253→        }
+   254→   254→      >
+   255→   255→        {isLoading ? (
+   256→   256→          <div className="p-4"><RowsSkeleton /></div>
+   257→   257→        ) : filtered.length === 0 ? (
+   258→   258→          <EmptyState
+   259→   259→            className="py-8"
+   260→   260→            title={search ? "Ничего не найдено" : "Городов пока нет"}
+   261→   261→            hint={search ? "Измените условие поиска" : "Нажмите «Создать» или импортируйте список из файла"}
+   262→   262→          />
+   263→   263→        ) : (
+   264→   264→          <div className="max-h-96 overflow-y-auto">
+   265→   265→            <table className="onec-table">
+   266→   266→              <thead>
+   267→   267→                <tr>
+   268→   268→                  <SortableTh label="Название" field="name" sort={sort} onSort={(f) => setSort(cycleSort(sort, f))} />
+   269→   269→                  <SortableTh label="ЛПУ" field="lpus" sort={sort} onSort={(f) => setSort(cycleSort(sort, f))} />
+   270→   270→                  <SortableTh label="НВ" field="doctors" sort={sort} onSort={(f) => setSort(cycleSort(sort, f))} />
+   271→   271→                </tr>
+   272→   272→              </thead>
+   273→   273→              <tbody>
+   274→   274→                {sorted.map((c) => (
+   275→   275→                  <tr
+   276→   276→                    key={c.id}
+   277→   277→                    onClick={() => setSelectedId(c.id)}
+   278→   278→                    className={cn("cursor-pointer", selectedId === c.id && "onec-row-selected")}
+   279→   279→                  >
+   280→   280→                    <td>
+   281→   281→                      <button
+   282→   282→                        type="button"
+   283→   283→                        className="font-medium text-brand hover:underline text-left"
+   284→   284→                        title="Изменить"
+   285→   285→                        onClick={(e) => {
+   286→   286→                          e.stopPropagation();
+   287→   287→                          setDialog({ mode: "edit", city: c });
+   288→   288→                        }}
+   289→   289→                      >
+   290→   290→                        {c.name}
+   291→   291→                      </button>
+   292→   292→                    </td>
+   293→   293→                    <td>{c._count?.lpus ?? 0}</td>
+   294→   294→                    <td>{c._count?.doctors ?? 0}</td>
+   295→   295→                  </tr>
+   296→   296→                ))}
+   297→   297→              </tbody>
+   298→   298→            </table>
+   299→   299→          </div>
+   300→   300→        )}
+   301→   301→      </DictWindow>
+   302→   302→
+   303→   303→      {dialog && (
+   304→   304→        <CityDialog
+   305→   305→          editing={dialog.mode === "edit" ? dialog.city : null}
+   306→   306→          onClose={() => setDialog(null)}
+   307→   307→        />
+   308→   308→      )}
+   309→   309→    </>
+   310→   310→  );
+   311→   311→}
+   312→   312→
+   313→   313→function CityDialog({ editing, onClose }: { editing: City | null; onClose: () => void }) {
+   314→   314→  const qc = useQueryClient();
+   315→   315→  const [name, setName] = useState(() => editing?.name ?? "");
+   316→   316→
+   317→   317→  const save = useMutation({
+   318→   318→    mutationFn: () =>
+   319→   319→      editing
+   320→   320→        ? api.put("/api/app/cities", { id: editing.id, name })
+   321→   321→        : api.post("/api/app/cities", { name }),
+   322→   322→    onSuccess: () => {
+   323→   323→      toast.success(editing ? "Город обновлен" : "Город добавлен");
+   324→   324→      qc.invalidateQueries({ queryKey: ["cities"] });
+   325→   325→      onClose();
+   326→   326→    },
+   327→   327→    onError: (e: Error) => toast.error(e.message),
+   328→   328→  });
+   329→   329→
+   330→   330→  return (
+   331→   331→    <Dialog open onOpenChange={(o) => !o && onClose()}>
+   332→   332→      <DialogContent className="max-h-[calc(100dvh-4rem)] overflow-y-auto sm:max-w-md">
+   333→   333→        <DialogHeader>
+   334→   334→          <DialogTitle className="font-display text-brand">
+   335→   335→            {editing ? "Редактирование города" : "Новый город"}
+   336→   336→          </DialogTitle>
+   337→   337→          <DialogDescription>
+   338→   338→            {editing ? "Измените название и нажмите «Сохранить»." : "Введите название города — он станет доступен для ЛПУ и врачей."}
+   339→   339→          </DialogDescription>
+   340→   340→        </DialogHeader>
+   341→   341→        <div className="space-y-4 py-2">
+   342→   342→          <div className="space-y-1.5">
+   343→   343→            <Label>Название</Label>
+   344→   344→            <Input value={name} onChange={(e) => setName(e.target.value)} placeholder="Например: Казань" autoFocus />
+   345→   345→          </div>
+   346→   346→        </div>
+   347→   347→        <DialogFooter>
+   348→   348→          <Button variant="outline" onClick={onClose}>Отмена</Button>
+   349→   349→          <Button onClick={() => save.mutate()} disabled={!name.trim() || save.isPending}>
+   350→   350→            {editing ? "Сохранить" : "Добавить"}
+   351→   351→          </Button>
+   352→   352→        </DialogFooter>
+   353→   353→      </DialogContent>
+   354→   354→    </Dialog>
+   355→   355→  );
+   356→   356→}
+   357→   357→
+   358→   358→/* ============ ЛПУ ============ */
+   359→   359→
+   360→   360→type LpuDialogState = { mode: "create" } | { mode: "edit"; lpu: CityData } | null;
+   361→   361→
+   362→   362→function LpusTab() {
+   363→   363→  const qc = useQueryClient();
+   364→   364→  const { data: session } = useSession();
+   365→   365→  const isMP = (session?.user as SessionUserWithRole)?.role === "MP";
+   366→   366→  const [selectedId, setSelectedId] = useState<string | null>(null);
+   367→   367→  const [search, setSearch] = useState("");
+   368→   368→  const [sort, setSort] = useState<SortState | null>(null);
+   369→   369→  const [dialog, setDialog] = useState<LpuDialogState>(null);
+   370→   370→
+   371→   371→  const { data: lpus, isLoading } = useQuery<CityData[]>({
+   372→   372→    queryKey: ["lpus"],
+   373→   373→    queryFn: () => api.get("/api/app/lpus"),
+   374→   374→  });
+   375→   375→
+   376→   376→  const filtered = useMemo(() => {
+   377→   377→    const q = search.trim().toLowerCase();
+   378→   378→    const list = lpus ?? [];
+   379→   379→    return q ? list.filter((l) => l.name.toLowerCase().includes(q)) : list;
+   380→   380→  }, [lpus, search]);
+   381→   381→
+   382→   382→  const sorted = useMemo(
+   383→   383→    () =>
+   384→   384→      applySort(filtered, sort, (l, f) => {
+   385→   385→        switch (f) {
+   386→   386→          case "name":
+   387→   387→            return l.name;
+   388→   388→          case "city":
+   389→   389→            return l.city.name;
+   390→   390→          case "address":
+   391→   391→            return l.address ?? "";
+   392→   392→          case "doctors":
+   393→   393→            return l._count?.doctors ?? 0;
+   394→   394→          case "requests":
+   395→   395→            return l._count?.requests ?? 0;
+   396→   396→          default:
+   397→   397→            return null;
+   398→   398→        }
+   399→   399→      }),
+   400→   400→    [filtered, sort]
+   401→   401→  );
+   402→   402→
+   403→   403→  const selected = (lpus ?? []).find((l) => l.id === selectedId) ?? null;
+   404→   404→
+   405→   405→  const remove = useMutation({
+   406→   406→    mutationFn: (id: string) => api.del(`/api/app/lpus?id=${id}`),
+   407→   407→    onSuccess: () => {
+   408→   408→      toast.success("ЛПУ удалено");
+   409→   409→      setSelectedId(null);
+   410→   410→      qc.invalidateQueries({ queryKey: ["lpus"] });
+   411→   411→    },
+   412→   412→    onError: (e: Error) => toast.error(e.message),
+   413→   413→  });
+   414→   414→
+   415→   415→  return (
+   416→   416→    <>
+   417→   417→      <DictWindow
+   418→   418→        icon={<Building2 className="h-4 w-4 text-sky" strokeWidth={2} />}
+   419→   419→        title="Лечебно-профилактические учреждения (ЛПУ)"
+   420→   420→        count={filtered.length}
+   421→   421→        toolbar={
+   422→   422→          <>
+   423→   423→            <DictCrudButtons
+   424→   424→              onCreate={() => setDialog({ mode: "create" })}
+   425→   425→              onEdit={() => selected && setDialog({ mode: "edit", lpu: selected })}
+   426→   426→              canEdit={!!selected}
+   427→   427→              deleteSlot={
+   428→   428→                isMP ? (
+   429→   429→                  <DeleteButton
+   430→   430→                    disabled={!selected}
+   431→   431→                    title={`Удалить ЛПУ «${selected?.name ?? ""}»?`}
+   432→   432→                    onConfirm={() => {
+   433→   433→                      if (selected) remove.mutateAsync(selected.id).catch(() => undefined);
+   434→   434→                    }}
+   435→   435→                  />
+   436→   436→                ) : undefined
+   437→   437→              }
+   438→   438→            />
+   439→   439→            <DictImportExport kind="lpus" />
+   440→   440→            <OnecSearch value={search} onChange={setSearch} placeholder="Поиск по названию ЛПУ…" />
+   441→   441→          </>
+   442→   442→        }
+   443→   443→      >
+   444→   444→        {isLoading ? (
+   445→   445→          <div className="p-4"><RowsSkeleton /></div>
+   446→   446→        ) : filtered.length === 0 ? (
+   447→   447→          <EmptyState
+   448→   448→            className="py-8"
+   449→   449→            title={search ? "Ничего не найдено" : "ЛПУ пока не добавлены"}
+   450→   450→            hint={search ? "Измените условие поиска" : "Нажмите «Создать» или импортируйте список из файла"}
+   451→   451→          />
+   452→   452→        ) : (
+   453→   453→          <div className="max-h-96 overflow-y-auto">
+   454→   454→            <table className="onec-table">
+   455→   455→              <thead>
+   456→   456→                <tr>
+   457→   457→                  <SortableTh label="Название" field="name" sort={sort} onSort={(f) => setSort(cycleSort(sort, f))} />
+   458→   458→                  <SortableTh label="Город" field="city" sort={sort} onSort={(f) => setSort(cycleSort(sort, f))} />
+   459→   459→                  <SortableTh label="Адрес" field="address" sort={sort} onSort={(f) => setSort(cycleSort(sort, f))} />
+   460→   460→                  <SortableTh label="НВ" field="doctors" sort={sort} onSort={(f) => setSort(cycleSort(sort, f))} />
+   461→   461→                  <SortableTh label="Заявки" field="requests" sort={sort} onSort={(f) => setSort(cycleSort(sort, f))} />
+   462→   462→                </tr>
+   463→   463→              </thead>
+   464→   464→              <tbody>
+   465→   465→                {sorted.map((l) => (
+   466→   466→                  <tr
+   467→   467→                    key={l.id}
+   468→   468→                    onClick={() => setSelectedId(l.id)}
+   469→   469→                    className={cn("cursor-pointer", selectedId === l.id && "onec-row-selected")}
+   470→   470→                  >
+   471→   471→                    <td>
+   472→   472→                      <button
+   473→   473→                        type="button"
+   474→   474→                        className="font-medium text-brand hover:underline text-left"
+   475→   475→                        title="Изменить"
+   476→   476→                        onClick={(e) => {
+   477→   477→                          e.stopPropagation();
+   478→   478→                          setDialog({ mode: "edit", lpu: l });
+   479→   479→                        }}
+   480→   480→                      >
+   481→   481→                        {l.name}
+   482→   482→                      </button>
+   483→   483→                    </td>
+   484→   484→                    <td>{l.city.name}</td>
+   485→   485→                    <td className="text-muted-foreground">{l.address ?? "—"}</td>
+   486→   486→                    <td>{l._count?.doctors ?? 0}</td>
+   487→   487→                    <td>{l._count?.requests ?? 0}</td>
+   488→   488→                  </tr>
+   489→   489→                ))}
+   490→   490→              </tbody>
+   491→   491→            </table>
+   492→   492→          </div>
+   493→   493→        )}
+   494→   494→      </DictWindow>
+   495→   495→
+   496→   496→      {dialog && (
+   497→   497→        <LpuDialog
+   498→   498→          editing={dialog.mode === "edit" ? dialog.lpu : null}
+   499→   499→          onClose={() => setDialog(null)}
+   500→   500→        />
+   501→   501→      )}
+   502→   502→    </>
+   503→   503→  );
+   504→   504→}
+   505→   505→
+   506→   506→function LpuDialog({ editing, onClose }: { editing: CityData | null; onClose: () => void }) {
+   507→   507→  const qc = useQueryClient();
+   508→   508→  const [form, setForm] = useState(() => ({
+   509→   509→    name: editing?.name ?? "",
+   510→   510→    cityId: editing?.city.id ?? "",
+   511→   511→    address: editing?.address ?? "",
+   512→   512→  }));
+   513→   513→
+   514→   514→  const { data: cities } = useQuery<City[]>({
+   515→   515→    queryKey: ["cities"],
+   516→   516→    queryFn: () => api.get("/api/app/cities"),
+   517→   517→  });
+   518→   518→
+   519→   519→  const save = useMutation({
+   520→   520→    mutationFn: () =>
+   521→   521→      editing
+   522→   522→        ? api.put("/api/app/lpus", { id: editing.id, ...form })
+   523→   523→        : api.post("/api/app/lpus", form),
+   524→   524→    onSuccess: () => {
+   525→   525→      toast.success(editing ? "ЛПУ обновлено" : "ЛПУ добавлено");
+   526→   526→      qc.invalidateQueries({ queryKey: ["lpus"] });
+   527→   527→      onClose();
+   528→   528→    },
+   529→   529→    onError: (e: Error) => toast.error(e.message),
+   530→   530→  });
+   531→   531→
+   532→   532→  return (
+   533→   533→    <Dialog open onOpenChange={(o) => !o && onClose()}>
+   534→   534→      <DialogContent className="max-h-[calc(100dvh-4rem)] overflow-y-auto sm:max-w-md">
+   535→   535→        <DialogHeader>
+   536→   536→          <DialogTitle className="font-display text-brand">
+   537→   537→            {editing ? "Редактирование ЛПУ" : "Новое ЛПУ"}
+   538→   538→          </DialogTitle>
+   539→   539→          <DialogDescription>
+   540→   540→            {editing ? "Измените реквизиты и нажмите «Сохранить»." : "Укажите название, город и адрес учреждения."}
+   541→   541→          </DialogDescription>
+   542→   542→        </DialogHeader>
+   543→   543→        <div className="space-y-4 py-2">
+   544→   544→          <div className="space-y-1.5">
+   545→   545→            <Label>Название</Label>
+   546→   546→            <Input value={form.name} onChange={(e) => setForm({ ...form, name: e.target.value })} placeholder="Например: ГКБ № 5" autoFocus />
+   547→   547→          </div>
+   548→   548→          <div className="space-y-1.5">
+   549→   549→            <Label>Город</Label>
+   550→   550→            {/* Radix Select не допускает value="" — пустое значение передаем как undefined (placeholder) */}
+   551→   551→            <Select value={form.cityId || undefined} onValueChange={(v) => setForm({ ...form, cityId: v })}>
+   552→   552→              <SelectTrigger><SelectValue placeholder="Выберите город" /></SelectTrigger>
+   553→   553→              <SelectContent>
+   554→   554→                {cities?.map((c) => (
+   555→   555→                  <SelectItem key={c.id} value={c.id}>{c.name}</SelectItem>
+   556→   556→                ))}
+   557→   557→              </SelectContent>
+   558→   558→            </Select>
+   559→   559→          </div>
+   560→   560→          <div className="space-y-1.5">
+   561→   561→            <Label>Адрес</Label>
+   562→   562→            <Input value={form.address} onChange={(e) => setForm({ ...form, address: e.target.value })} placeholder="Улица, дом" />
+   563→   563→          </div>
+   564→   564→        </div>
+   565→   565→        <DialogFooter>
+   566→   566→          <Button variant="outline" onClick={onClose}>Отмена</Button>
+   567→   567→          <Button
+   568→   568→            onClick={() => save.mutate()}
+   569→   569→            disabled={!form.name.trim() || !form.cityId || save.isPending}
+   570→   570→          >
+   571→   571→            {editing ? "Сохранить" : "Добавить"}
+   572→   572→          </Button>
+   573→   573→        </DialogFooter>
+   574→   574→      </DialogContent>
+   575→   575→    </Dialog>
+   576→   576→  );
+   577→   577→}
+   578→   578→
+   579→   579→/* ============ Номенклатура ============ */
+   580→   580→
+   581→   581→type NomDialogState = { mode: "create" } | { mode: "edit"; item: NomenclatureItem } | null;
+   582→   582→
+   583→   583→function NomenclatureTab() {
+   584→   584→  const qc = useQueryClient();
+   585→   585→  const { data: session } = useSession();
+   586→   586→  const isMP = (session?.user as SessionUserWithRole)?.role === "MP";
+   587→   587→  const [selectedId, setSelectedId] = useState<string | null>(null);
+   588→   588→  const [search, setSearch] = useState("");
+   589→   589→  const [sort, setSort] = useState<SortState | null>(null);
+   590→   590→  const [dialog, setDialog] = useState<NomDialogState>(null);
+   591→   591→
+   592→   592→  const { data: items, isLoading } = useQuery<NomenclatureItem[]>({
+   593→   593→    queryKey: ["nomenclature"],
+   594→   594→    queryFn: () => api.get("/api/app/nomenclature"),
+   595→   595→  });
+   596→   596→
+   597→   597→  const filtered = useMemo(() => {
+   598→   598→    const q = search.trim().toLowerCase();
+   599→   599→    const list = items ?? [];
+   600→   600→    return q ? list.filter((n) => n.name.toLowerCase().includes(q)) : list;
+   601→   601→  }, [items, search]);
+   602→   602→
+   603→   603→  const sorted = useMemo(
+   604→   604→    () =>
+   605→   605→      applySort(filtered, sort, (n, f) => {
+   606→   606→        switch (f) {
+   607→   607→          case "name":
+   608→   608→            return n.name;
+   609→   609→          case "category":
+   610→   610→            return n.category;
+   611→   611→          case "active":
+   612→   612→            return n.isActive ? 1 : 0;
+   613→   613→          default:
+   614→   614→            return null;
+   615→   615→        }
+   616→   616→      }),
+   617→   617→    [filtered, sort]
+   618→   618→  );
+   619→   619→
+   620→   620→  const selected = (items ?? []).find((n) => n.id === selectedId) ?? null;
+   621→   621→
+   622→   622→  const remove = useMutation({
+   623→   623→    mutationFn: (id: string) => api.del<{ deactivated?: boolean }>(`/api/app/nomenclature?id=${id}`),
+   624→   624→    onSuccess: (r: { deactivated?: boolean }) => {
+   625→   625→      toast.success(r.deactivated ? "Позиция используется — деактивирована" : "Позиция удалена");
+   626→   626→      setSelectedId(null);
+   627→   627→      qc.invalidateQueries({ queryKey: ["nomenclature"] });
+   628→   628→    },
+   629→   629→    onError: (e: Error) => toast.error(e.message),
+   630→   630→  });
+   631→   631→
+   632→   632→  return (
+   633→   633→    <>
+   634→   634→      <DictWindow
+   635→   635→        icon={<ListChecks className="h-4 w-4 text-sky" strokeWidth={2} />}
+   636→   636→        title="Номенклатура (услуги и обследования)"
+   637→   637→        count={filtered.length}
+   638→   638→        toolbar={
+   639→   639→          <>
+   640→   640→            <DictCrudButtons
+   641→   641→              onCreate={() => setDialog({ mode: "create" })}
+   642→   642→              onEdit={() => selected && setDialog({ mode: "edit", item: selected })}
+   643→   643→              canEdit={!!selected}
+   644→   644→              deleteSlot={
+   645→   645→                isMP ? (
+   646→   646→                  <DeleteButton
+   647→   647→                    disabled={!selected}
+   648→   648→                    title={`Удалить «${selected?.name ?? ""}»?`}
+   649→   649→                    onConfirm={() => {
+   650→   650→                      if (selected) remove.mutateAsync(selected.id).catch(() => undefined);
+   651→   651→                    }}
+   652→   652→                  />
+   653→   653→                ) : undefined
+   654→   654→              }
+   655→   655→            />
+   656→   656→            <DictImportExport kind="nomenclature" />
+   657→   657→            <OnecSearch value={search} onChange={setSearch} placeholder="Поиск по наименованию…" />
+   658→   658→          </>
+   659→   659→        }
+   660→   660→      >
+   661→   661→        {isLoading ? (
+   662→   662→          <div className="p-4"><RowsSkeleton /></div>
+   663→   663→        ) : filtered.length === 0 ? (
+   664→   664→          <EmptyState
+   665→   665→            className="py-8"
+   666→   666→            title={search ? "Ничего не найдено" : "Позиций пока нет"}
+   667→   667→            hint={search ? "Измените условие поиска" : "Нажмите «Создать» или импортируйте список из файла"}
+   668→   668→          />
+   669→   669→        ) : (
+   670→   670→          <div className="max-h-96 overflow-y-auto">
+   671→   671→            <table className="onec-table">
+   672→   672→              <thead>
+   673→   673→                <tr>
+   674→   674→                  <SortableTh label="Наименование" field="name" sort={sort} onSort={(f) => setSort(cycleSort(sort, f))} />
+   675→   675→                  <SortableTh label="Категория" field="category" sort={sort} onSort={(f) => setSort(cycleSort(sort, f))} />
+   676→   676→                  <SortableTh label="Активна" field="active" sort={sort} onSort={(f) => setSort(cycleSort(sort, f))} />
+   677→   677→                </tr>
+   678→   678→              </thead>
+   679→   679→              <tbody>
+   680→   680→                {sorted.map((n) => (
+   681→   681→                  <tr
+   682→   682→                    key={n.id}
+   683→   683→                    onClick={() => setSelectedId(n.id)}
+   684→   684→                    className={cn("cursor-pointer", selectedId === n.id && "onec-row-selected")}
+   685→   685→                  >
+   686→   686→                    <td>
+   687→   687→                      <button
+   688→   688→                        type="button"
+   689→   689→                        className={cn(
+   690→   690→                          "font-medium text-left hover:underline",
+   691→   691→                          n.isActive ? "text-brand" : "text-muted-foreground line-through"
+   692→   692→                        )}
+   693→   693→                        title="Изменить"
+   694→   694→                        onClick={(e) => {
+   695→   695→                          e.stopPropagation();
+   696→   696→                          setDialog({ mode: "edit", item: n });
+   697→   697→                        }}
+   698→   698→                      >
+   699→   699→                        {n.name}
+   700→   700→                      </button>
+   701→   701→                    </td>
+   702→   702→                    <td className="text-muted-foreground">{n.category}</td>
+   703→   703→                    <td>
+   704→   704→                      {n.isActive ? (
+   705→   705→                        <Badge variant="outline" className="bg-azure/10 text-azure-dark border-azure/30">да</Badge>
+   706→   706→                      ) : (
+   707→   707→                        <Badge variant="outline" className="bg-muted text-muted-foreground border-border">нет</Badge>
+   708→   708→                      )}
+   709→   709→                    </td>
+   710→   710→                  </tr>
+   711→   711→                ))}
+   712→   712→              </tbody>
+   713→   713→            </table>
+   714→   714→          </div>
+   715→   715→        )}
+   716→   716→      </DictWindow>
+   717→   717→
+   718→   718→      {dialog && (
+   719→   719→        <NomenclatureDialog
+   720→   720→          editing={dialog.mode === "edit" ? dialog.item : null}
+   721→   721→          onClose={() => setDialog(null)}
+   722→   722→        />
+   723→   723→      )}
+   724→   724→    </>
+   725→   725→  );
+   726→   726→}
+   727→   727→
+   728→   728→function NomenclatureDialog({
+   729→   729→  editing,
+   730→   730→  onClose,
+   731→   731→}: {
+   732→   732→  editing: NomenclatureItem | null;
+   733→   733→  onClose: () => void;
+   734→   734→}) {
+   735→   735→  const qc = useQueryClient();
+   736→   736→  const [form, setForm] = useState(() => ({
+   737→   737→    name: editing?.name ?? "",
+   738→   738→    category: editing?.category ?? "Обследования",
+   739→   739→  }));
+   740→   740→
+   741→   741→  const save = useMutation({
+   742→   742→    mutationFn: () =>
+   743→   743→      editing
+   744→   744→        ? api.put("/api/app/nomenclature", { id: editing.id, ...form })
+   745→   745→        : api.post("/api/app/nomenclature", form),
+   746→   746→    onSuccess: () => {
+   747→   747→      toast.success(editing ? "Позиция обновлена" : "Позиция добавлена");
+   748→   748→      qc.invalidateQueries({ queryKey: ["nomenclature"] });
+   749→   749→      onClose();
+   750→   750→    },
+   751→   751→    onError: (e: Error) => toast.error(e.message),
+   752→   752→  });
+   753→   753→
+   754→   754→  return (
+   755→   755→    <Dialog open onOpenChange={(o) => !o && onClose()}>
+   756→   756→      <DialogContent className="max-h-[calc(100dvh-4rem)] overflow-y-auto sm:max-w-md">
+   757→   757→        <DialogHeader>
+   758→   758→          <DialogTitle className="font-display text-brand">
+   759→   759→            {editing ? "Редактирование позиции" : "Новая позиция номенклатуры"}
+   760→   760→          </DialogTitle>
+   761→   761→          <DialogDescription>
+   762→   762→            Справочник используется в полях «Что назначено» и «Что сделано» заявки.
+   763→   763→          </DialogDescription>
+   764→   764→        </DialogHeader>
+   765→   765→        <div className="space-y-4 py-2">
+   766→   766→          <div className="space-y-1.5">
+   767→   767→            <Label>Наименование</Label>
+   768→   768→            <Input value={form.name} onChange={(e) => setForm({ ...form, name: e.target.value })} placeholder="Например: МРТ головного мозга" autoFocus />
+   769→   769→          </div>
+   770→   770→          <div className="space-y-1.5">
+   771→   771→            <Label>Категория</Label>
+   772→   772→            <Input value={form.category} onChange={(e) => setForm({ ...form, category: e.target.value })} placeholder="Обследования / Комплексные" />
+   773→   773→          </div>
+   774→   774→        </div>
+   775→   775→        <DialogFooter>
+   776→   776→          <Button variant="outline" onClick={onClose}>Отмена</Button>
+   777→   777→          <Button onClick={() => save.mutate()} disabled={!form.name.trim() || save.isPending}>
+   778→   778→            {editing ? "Сохранить" : "Добавить"}
+   779→   779→          </Button>
+   780→   780→        </DialogFooter>
+   781→   781→      </DialogContent>
+   782→   782→    </Dialog>
+   783→   783→  );
+   784→   784→}
+   785→   785→
+   786→   786→/* ============ Специализация врача ============ */
+   787→   787→
+   788→   788→type SpecDialogState = { mode: "create" } | { mode: "edit"; item: SpecializationItem } | null;
+   789→   789→
+   790→   790→function SpecializationsTab() {
+   791→   791→  const qc = useQueryClient();
+   792→   792→  const { data: session } = useSession();
+   793→   793→  const isMP = (session?.user as SessionUserWithRole)?.role === "MP";
+   794→   794→  const [selectedId, setSelectedId] = useState<string | null>(null);
+   795→   795→  const [search, setSearch] = useState("");
+   796→   796→  const [sort, setSort] = useState<SortState | null>(null);
+   797→   797→  const [dialog, setDialog] = useState<SpecDialogState>(null);
+   798→   798→
+   799→   799→  const { data: items, isLoading } = useQuery<SpecializationItem[]>({
+   800→   800→    queryKey: ["specializations"],
+   801→   801→    queryFn: () => api.get("/api/app/specializations"),
+   802→   802→  });
+   803→   803→
+   804→   804→  const filtered = useMemo(() => {
+   805→   805→    const q = search.trim().toLowerCase();
+   806→   806→    const list = items ?? [];
+   807→   807→    return q ? list.filter((s) => s.name.toLowerCase().includes(q)) : list;
+   808→   808→  }, [items, search]);
+   809→   809→
+   810→   810→  const sorted = useMemo(
+   811→   811→    () =>
+   812→   812→      applySort(filtered, sort, (s, f) => {
+   813→   813→        switch (f) {
+   814→   814→          case "name":
+   815→   815→            return s.name;
+   816→   816→          case "active":
+   817→   817→            return s.isActive ? 1 : 0;
+   818→   818→          case "doctors":
+   819→   819→            return s._count?.doctors ?? 0;
+   820→   820→          default:
+   821→   821→            return null;
+   822→   822→        }
+   823→   823→      }),
+   824→   824→    [filtered, sort]
+   825→   825→  );
+   826→   826→
+   827→   827→  const selected = (items ?? []).find((s) => s.id === selectedId) ?? null;
+   828→   828→
+   829→   829→  const remove = useMutation({
+   830→   830→    mutationFn: (id: string) => api.del<{ deactivated?: boolean }>(`/api/app/specializations?id=${id}`),
+   831→   831→    onSuccess: (r: { deactivated?: boolean }) => {
+   832→   832→      toast.success(r.deactivated ? "Специализация используется — деактивирована" : "Специализация удалена");
+   833→   833→      setSelectedId(null);
+   834→   834→      qc.invalidateQueries({ queryKey: ["specializations"] });
+   835→   835→      qc.invalidateQueries({ queryKey: ["doctors"] });
+   836→   836→    },
+   837→   837→    onError: (e: Error) => toast.error(e.message),
+   838→   838→  });
+   839→   839→
+   840→   840→  return (
+   841→   841→    <>
+   842→   842→      <DictWindow
+   843→   843→        icon={<Stethoscope className="h-4 w-4 text-sky" strokeWidth={2} />}
+   844→   844→        title="Специализация врача"
+   845→   845→        count={filtered.length}
+   846→   846→        toolbar={
+   847→   847→          <>
+   848→   848→            <DictCrudButtons
+   849→   849→              onCreate={() => setDialog({ mode: "create" })}
+   850→   850→              onEdit={() => selected && setDialog({ mode: "edit", item: selected })}
+   851→   851→              canEdit={!!selected}
+   852→   852→              deleteSlot={
+   853→   853→                isMP ? (
+   854→   854→                  <DeleteButton
+   855→   855→                    disabled={!selected}
+   856→   856→                    title={`Удалить специализацию «${selected?.name ?? ""}»?`}
+   857→   857→                    onConfirm={() => {
+   858→   858→                      if (selected) remove.mutateAsync(selected.id).catch(() => undefined);
+   859→   859→                    }}
+   860→   860→                  />
+   861→   861→                ) : undefined
+   862→   862→              }
+   863→   863→            />
+   864→   864→            <DictImportExport kind="specializations" />
+   865→   865→            <OnecSearch value={search} onChange={setSearch} placeholder="Поиск по названию специализации…" />
+   866→   866→          </>
+   867→   867→        }
+   868→   868→      >
+   869→   869→        {isLoading ? (
+   870→   870→          <div className="p-4"><RowsSkeleton /></div>
+   871→   871→        ) : filtered.length === 0 ? (
+   872→   872→          <EmptyState
+   873→   873→            className="py-8"
+   874→   874→            title={search ? "Ничего не найдено" : "Специализаций пока нет"}
+   875→   875→            hint={search ? "Измените условие поиска" : "Нажмите «Создать» или импортируйте список из файла"}
+   876→   876→          />
+   877→   877→        ) : (
+   878→   878→          <div className="max-h-96 overflow-y-auto">
+   879→   879→            <table className="onec-table">
+   880→   880→              <thead>
+   881→   881→                <tr>
+   882→   882→                  <SortableTh label="Название" field="name" sort={sort} onSort={(f) => setSort(cycleSort(sort, f))} />
+   883→   883→                  <SortableTh label="Активна" field="active" sort={sort} onSort={(f) => setSort(cycleSort(sort, f))} />
+   884→   884→                  <SortableTh label="НВ" field="doctors" sort={sort} onSort={(f) => setSort(cycleSort(sort, f))} />
+   885→   885→                </tr>
+   886→   886→              </thead>
+   887→   887→              <tbody>
+   888→   888→                {sorted.map((s) => (
+   889→   889→                  <tr
+   890→   890→                    key={s.id}
+   891→   891→                    onClick={() => setSelectedId(s.id)}
+   892→   892→                    className={cn("cursor-pointer", selectedId === s.id && "onec-row-selected")}
+   893→   893→                  >
+   894→   894→                    <td>
+   895→   895→                      <button
+   896→   896→                        type="button"
+   897→   897→                        className={cn(
+   898→   898→                          "font-medium text-left hover:underline",
+   899→   899→                          s.isActive ? "text-brand" : "text-muted-foreground line-through"
+   900→   900→                        )}
+   901→   901→                        title="Изменить"
+   902→   902→                        onClick={(e) => {
+   903→   903→                          e.stopPropagation();
+   904→   904→                          setDialog({ mode: "edit", item: s });
+   905→   905→                        }}
+   906→   906→                      >
+   907→   907→                        {s.name}
+   908→   908→                      </button>
+   909→   909→                    </td>
+   910→   910→                    <td>
+   911→   911→                      {s.isActive ? (
+   912→   912→                        <Badge variant="outline" className="bg-azure/10 text-azure-dark border-azure/30">да</Badge>
+   913→   913→                      ) : (
+   914→   914→                        <Badge variant="outline" className="bg-muted text-muted-foreground border-border">нет</Badge>
+   915→   915→                      )}
+   916→   916→                    </td>
+   917→   917→                    <td>{s._count?.doctors ?? 0}</td>
+   918→   918→                  </tr>
+   919→   919→                ))}
+   920→   920→              </tbody>
+   921→   921→            </table>
+   922→   922→          </div>
+   923→   923→        )}
+   924→   924→      </DictWindow>
+   925→   925→
+   926→   926→      {dialog && (
+   927→   927→        <SpecializationDialog
+   928→   928→          editing={dialog.mode === "edit" ? dialog.item : null}
+   929→   929→          onClose={() => setDialog(null)}
+   930→   930→        />
+   931→   931→      )}
+   932→   932→    </>
+   933→   933→  );
+   934→   934→}
+   935→   935→
+   936→   936→function SpecializationDialog({ editing, onClose }: { editing: SpecializationItem | null; onClose: () => void }) {
+   937→   937→  const qc = useQueryClient();
+   938→   938→  const [name, setName] = useState(() => editing?.name ?? "");
+   939→   939→
+   940→   940→  const save = useMutation({
+   941→   941→    mutationFn: () =>
+   942→   942→      editing
+   943→   943→        ? api.put("/api/app/specializations", { id: editing.id, name })
+   944→   944→        : api.post("/api/app/specializations", { name }),
+   945→   945→    onSuccess: () => {
+   946→   946→      toast.success(editing ? "Специализация обновлена" : "Специализация добавлена");
+   947→   947→      qc.invalidateQueries({ queryKey: ["specializations"] });
+   948→   948→      qc.invalidateQueries({ queryKey: ["doctors"] });
+   949→   949→      onClose();
+   950→   950→    },
+   951→   951→    onError: (e: Error) => toast.error(e.message),
+   952→   952→  });
+   953→   953→
+   954→   954→  return (
+   955→   955→    <Dialog open onOpenChange={(o) => !o && onClose()}>
+   956→   956→      <DialogContent className="max-h-[calc(100dvh-4rem)] overflow-y-auto sm:max-w-md">
+   957→   957→        <DialogHeader>
+   958→   958→          <DialogTitle className="font-display text-brand">
+   959→   959→            {editing ? "Редактирование специализации" : "Новая специализация"}
+   960→   960→          </DialogTitle>
+   961→   961→          <DialogDescription>
+   962→   962→            {editing ? "Измените название и нажмите «Сохранить»." : "Введите название специализации — она станет доступна в карточках НВ."}
+   963→   963→          </DialogDescription>
+   964→   964→        </DialogHeader>
+   965→   965→        <div className="space-y-4 py-2">
+   966→   966→          <div className="space-y-1.5">
+   967→   967→            <Label>Название</Label>
+   968→   968→            <Input value={name} onChange={(e) => setName(e.target.value)} placeholder="Например: Врач-рентгенолог" autoFocus />
+   969→   969→          </div>
+   970→   970→        </div>
+   971→   971→        <DialogFooter>
+   972→   972→          <Button variant="outline" onClick={onClose}>Отмена</Button>
+   973→   973→          <Button onClick={() => save.mutate()} disabled={!name.trim() || save.isPending}>
+   974→   974→            {editing ? "Сохранить" : "Добавить"}
+   975→   975→          </Button>
+   976→   976→        </DialogFooter>
+   977→   977→      </DialogContent>
+   978→   978→    </Dialog>
+   979→   979→  );
+   980→   980→}
+   981→   981→
+   982→   982→/* ============ Статусы сотрудничества ============ */
+   983→   983→
+   984→   984→type StatusDialogState = { mode: "create" } | { mode: "edit"; item: CooperationStatus } | null;
+   985→   985→
+   986→   986→function StatusesTab() {
+   987→   987→  const qc = useQueryClient();
+   988→   988→  const { data: session } = useSession();
+   989→   989→  const isMP = (session?.user as SessionUserWithRole)?.role === "MP";
+   990→   990→  const [selectedId, setSelectedId] = useState<string | null>(null);
+   991→   991→  const [search, setSearch] = useState("");
+   992→   992→  const [sort, setSort] = useState<SortState | null>(null);
+   993→   993→  const [dialog, setDialog] = useState<StatusDialogState>(null);
+   994→   994→
+   995→   995→  const { data: items, isLoading } = useQuery<CooperationStatus[]>({
+   996→   996→    queryKey: ["statuses"],
+   997→   997→    queryFn: () => api.get("/api/app/statuses"),
+   998→   998→  });
+   999→   999→
+  1000→  1000→  const filtered = useMemo(() => {
+  1001→  1001→    const q = search.trim().toLowerCase();
+  1002→  1002→    const list = items ?? [];
+  1003→  1003→    return q ? list.filter((s) => s.name.toLowerCase().includes(q)) : list;
+  1004→  1004→  }, [items, search]);
+  1005→  1005→
+  1006→  1006→  const sorted = useMemo(
+  1007→  1007→    () =>
+  1008→  1008→      applySort(filtered, sort, (s, f) => {
+  1009→  1009→        switch (f) {
+  1010→  1010→          case "name":
+  1011→  1011→            return s.name;
+  1012→  1012→          case "doctors":
+  1013→  1013→            return s._count?.doctors ?? 0;
+  1014→  1014→          default:
+  1015→  1015→            return null;
+  1016→  1016→        }
+  1017→  1017→      }),
+  1018→  1018→    [filtered, sort]
+  1019→  1019→  );
+  1020→  1020→
+  1021→  1021→  const selected = (items ?? []).find((s) => s.id === selectedId) ?? null;
+  1022→  1022→
+  1023→  1023→  const remove = useMutation({
+  1024→  1024→    mutationFn: (id: string) => api.del(`/api/app/statuses?id=${id}`),
+  1025→  1025→    onSuccess: () => {
+  1026→  1026→      toast.success("Статус удален");
+  1027→  1027→      setSelectedId(null);
+  1028→  1028→      qc.invalidateQueries({ queryKey: ["statuses"] });
+  1029→  1029→    },
+  1030→  1030→    onError: (e: Error) => toast.error(e.message),
+  1031→  1031→  });
+  1032→  1032→
+  1033→  1033→  return (
+  1034→  1034→    <>
+  1035→  1035→      <DictWindow
+  1036→  1036→        icon={<Tag className="h-4 w-4 text-sky" strokeWidth={2} />}
+  1037→  1037→        title="Статусы сотрудничества с НВ"
+  1038→  1038→        count={filtered.length}
+  1039→  1039→        toolbar={
+  1040→  1040→          <>
+  1041→  1041→            <DictCrudButtons
+  1042→  1042→              onCreate={() => setDialog({ mode: "create" })}
+  1043→  1043→              onEdit={() => selected && setDialog({ mode: "edit", item: selected })}
+  1044→  1044→              canEdit={!!selected}
+  1045→  1045→              deleteSlot={
+  1046→  1046→                isMP ? (
+  1047→  1047→                  <DeleteButton
+  1048→  1048→                    disabled={!selected}
+  1049→  1049→                    title={`Удалить статус «${selected?.name ?? ""}»?`}
+  1050→  1050→                    onConfirm={() => {
+  1051→  1051→                      if (selected) remove.mutateAsync(selected.id).catch(() => undefined);
+  1052→  1052→                    }}
+  1053→  1053→                  />
+  1054→  1054→                ) : undefined
+  1055→  1055→              }
+  1056→  1056→            />
+  1057→  1057→            <DictImportExport kind="statuses" />
+  1058→  1058→            <OnecSearch value={search} onChange={setSearch} placeholder="Поиск по названию статуса…" />
+  1059→  1059→          </>
+  1060→  1060→        }
+  1061→  1061→      >
+  1062→  1062→        {isLoading ? (
+  1063→  1063→          <div className="p-4"><RowsSkeleton /></div>
+  1064→  1064→        ) : filtered.length === 0 ? (
+  1065→  1065→          <EmptyState
+  1066→  1066→            className="py-8"
+  1067→  1067→            title={search ? "Ничего не найдено" : "Статусов пока нет"}
+  1068→  1068→            hint={search ? "Измените условие поиска" : "Нажмите «Создать» или импортируйте список из файла"}
+  1069→  1069→          />
+  1070→  1070→        ) : (
+  1071→  1071→          <div className="max-h-96 overflow-y-auto">
+  1072→  1072→            <table className="onec-table">
+  1073→  1073→              <thead>
+  1074→  1074→                <tr>
+  1075→  1075→                  <SortableTh label="Название" field="name" sort={sort} onSort={(f) => setSort(cycleSort(sort, f))} />
+  1076→  1076→                  <th>Цвет</th>
+  1077→  1077→                  <SortableTh label="НВ" field="doctors" sort={sort} onSort={(f) => setSort(cycleSort(sort, f))} />
+  1078→  1078→                </tr>
+  1079→  1079→              </thead>
+  1080→  1080→              <tbody>
+  1081→  1081→                {sorted.map((s) => (
+  1082→  1082→                  <tr
+  1083→  1083→                    key={s.id}
+  1084→  1084→                    onClick={() => setSelectedId(s.id)}
+  1085→  1085→                    className={cn("cursor-pointer", selectedId === s.id && "onec-row-selected")}
+  1086→  1086→                  >
+  1087→  1087→                    <td>
+  1088→  1088→                      <button
+  1089→  1089→                        type="button"
+  1090→  1090→                        className="font-medium text-brand hover:underline text-left"
+  1091→  1091→                        title="Изменить"
+  1092→  1092→                        onClick={(e) => {
+  1093→  1093→                          e.stopPropagation();
+  1094→  1094→                          setDialog({ mode: "edit", item: s });
+  1095→  1095→                        }}
+  1096→  1096→                      >
+  1097→  1097→                        {s.name}
+  1098→  1098→                      </button>
+  1099→  1099→                    </td>
+  1100→  1100→                    <td>
+  1101→  1101→                      <span className="inline-flex items-center gap-2">
+  1102→  1102→                        <span
+  1103→  1103→                          className="inline-block h-3 w-3 rounded-full border border-black/10"
+  1104→  1104→                          style={{ backgroundColor: s.color }}
+  1105→  1105→                          aria-hidden="true"
+  1106→  1106→                        />
+  1107→  1107→                        <span className="text-muted-foreground text-xs">{s.color}</span>
+  1108→  1108→                      </span>
+  1109→  1109→                    </td>
+  1110→  1110→                    <td>{s._count?.doctors ?? 0}</td>
+  1111→  1111→                  </tr>
+  1112→  1112→                ))}
+  1113→  1113→              </tbody>
+  1114→  1114→            </table>
+  1115→  1115→          </div>
+  1116→  1116→        )}
+  1117→  1117→      </DictWindow>
+  1118→  1118→
+  1119→  1119→      {dialog && (
+  1120→  1120→        <StatusDialog
+  1121→  1121→          editing={dialog.mode === "edit" ? dialog.item : null}
+  1122→  1122→          onClose={() => setDialog(null)}
+  1123→  1123→        />
+  1124→  1124→      )}
+  1125→  1125→    </>
+  1126→  1126→  );
+  1127→  1127→}
+  1128→  1128→
+  1129→  1129→function StatusDialog({
+  1130→  1130→  editing,
+  1131→  1131→  onClose,
+  1132→  1132→}: {
+  1133→  1133→  editing: CooperationStatus | null;
+  1134→  1134→  onClose: () => void;
+  1135→  1135→}) {
+  1136→  1136→  const qc = useQueryClient();
+  1137→  1137→  const [form, setForm] = useState(() => ({
+  1138→  1138→    name: editing?.name ?? "",
+  1139→  1139→    color: editing?.color ?? "#7692cb",
+  1140→  1140→  }));
+  1141→  1141→
+  1142→  1142→  const save = useMutation({
+  1143→  1143→    mutationFn: () =>
+  1144→  1144→      editing
+  1145→  1145→        ? api.put("/api/app/statuses", { id: editing.id, ...form })
+  1146→  1146→        : api.post("/api/app/statuses", form),
+  1147→  1147→    onSuccess: () => {
+  1148→  1148→      toast.success(editing ? "Статус обновлен" : "Статус добавлен");
+  1149→  1149→      qc.invalidateQueries({ queryKey: ["statuses"] });
+  1150→  1150→      onClose();
+  1151→  1151→    },
+  1152→  1152→    onError: (e: Error) => toast.error(e.message),
+  1153→  1153→  });
+  1154→  1154→
+  1155→  1155→  return (
+  1156→  1156→    <Dialog open onOpenChange={(o) => !o && onClose()}>
+  1157→  1157→      <DialogContent className="max-h-[calc(100dvh-4rem)] overflow-y-auto sm:max-w-md">
+  1158→  1158→        <DialogHeader>
+  1159→  1159→          <DialogTitle className="font-display text-brand">
+  1160→  1160→            {editing ? "Редактирование статуса" : "Новый статус сотрудничества"}
+  1161→  1161→          </DialogTitle>
+  1162→  1162→          <DialogDescription>
+  1163→  1163→            Варианты оформления НВ (ИП, СЗ, штат и др.) — цвет используется в бейджах карточек врачей.
+  1164→  1164→          </DialogDescription>
+  1165→  1165→        </DialogHeader>
+  1166→  1166→        <div className="space-y-4 py-2">
+  1167→  1167→          <div className="space-y-1.5">
+  1168→  1168→            <Label>Название</Label>
+  1169→  1169→            <Input value={form.name} onChange={(e) => setForm({ ...form, name: e.target.value })} placeholder="Например: ИП" autoFocus />
+  1170→  1170→          </div>
+  1171→  1171→          <div className="space-y-1.5">
+  1172→  1172→            <Label>Цвет</Label>
+  1173→  1173→            <div className="flex items-center gap-3">
+  1174→  1174→              <input
+  1175→  1175→                type="color"
+  1176→  1176→                value={form.color}
+  1177→  1177→                onChange={(e) => setForm({ ...form, color: e.target.value })}
+  1178→  1178→                className="h-9 w-14 cursor-pointer rounded-md border border-border bg-white p-1"
+  1179→  1179→                aria-label="Цвет статуса"
+  1180→  1180→              />
+  1181→  1181→              <Input
+  1182→  1182→                value={form.color}
+  1183→  1183→                onChange={(e) => setForm({ ...form, color: e.target.value })}
+  1184→  1184→                className="w-32 font-mono text-sm"
+  1185→  1185→                placeholder="#7692cb"
+  1186→  1186→              />
+  1187→  1187→            </div>
+  1188→  1188→          </div>
+  1189→  1189→        </div>
+  1190→  1190→        <DialogFooter>
+  1191→  1191→          <Button variant="outline" onClick={onClose}>Отмена</Button>
+  1192→  1192→          <Button onClick={() => save.mutate()} disabled={!form.name.trim() || save.isPending}>
+  1193→  1193→            {editing ? "Сохранить" : "Добавить"}
+  1194→  1194→          </Button>
+  1195→  1195→        </DialogFooter>
+  1196→  1196→      </DialogContent>
+  1197→  1197→    </Dialog>
+  1198→  1198→  );
+  1199→  1199→}
+  1200→  1200→

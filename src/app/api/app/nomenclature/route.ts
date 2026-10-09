@@ -51,3 +51,30 @@ export async function DELETE(req: NextRequest) {
   await audit(session, "DELETE", "nomenclature", id, `Номенклатура: ${item.name}`);
   return NextResponse.json({ ok: true });
 }
+
+// PUT /api/app/nomenclature — редактирование позиции номенклатуры
+export async function PUT(req: NextRequest) {
+  const { session, error } = await requireAuth();
+  if (error) return error;
+  const body = await req.json().catch(() => null);
+  const id = String(body?.id ?? "");
+  const name = String(body?.name ?? "").trim();
+  if (!id) return badRequest("Не указан id");
+  if (!name) return badRequest("Укажите наименование");
+  const category = String(body?.category ?? "").trim() || "Обследования";
+  const dup = await db.nomenclature.findFirst({ where: { name, category, NOT: { id } } });
+  if (dup) return badRequest("Такая позиция уже существует");
+  const item = await db.nomenclature
+    .update({
+      where: { id },
+      data: {
+        name,
+        category,
+        ...(body?.isActive !== undefined ? { isActive: Boolean(body.isActive) } : {}),
+      },
+    })
+    .catch(() => null);
+  if (!item) return notFound("Позиция не найдена");
+  await audit(session, "UPDATE", "nomenclature", id, `Номенклатура: ${name}`);
+  return NextResponse.json(item);
+}

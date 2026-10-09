@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 import { db } from "@/lib/db";
-import { audit, badRequest, requireAuth, requireMP } from "@/lib/api-helpers";
+import { audit, badRequest, notFound, requireAuth, requireMP } from "@/lib/api-helpers";
 
 // GET /api/app/cities — список городов
 export async function GET() {
@@ -40,4 +40,21 @@ export async function DELETE(req: NextRequest) {
   if (!city) return badRequest("Город не найден");
   await audit(session, "DELETE", "city", id, `Город: ${city.name}`);
   return NextResponse.json({ ok: true });
+}
+
+// PUT /api/app/cities — редактирование города
+export async function PUT(req: NextRequest) {
+  const { session, error } = await requireAuth();
+  if (error) return error;
+  const body = await req.json().catch(() => null);
+  const id = String(body?.id ?? "");
+  const name = String(body?.name ?? "").trim();
+  if (!id) return badRequest("Не указан id");
+  if (!name) return badRequest("Укажите название города");
+  const dup = await db.city.findFirst({ where: { name, NOT: { id } } });
+  if (dup) return badRequest("Такой город уже существует");
+  const city = await db.city.update({ where: { id }, data: { name } }).catch(() => null);
+  if (!city) return notFound("Город не найден");
+  await audit(session, "UPDATE", "city", id, `Город: ${name}`);
+  return NextResponse.json(city);
 }

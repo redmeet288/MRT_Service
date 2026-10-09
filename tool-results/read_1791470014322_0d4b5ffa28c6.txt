@@ -1,0 +1,753 @@
+     1→"use client";
+     2→
+     3→import { useMemo, useState } from "react";
+     4→import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+     5→import { useSession } from "next-auth/react";
+     6→import { toast } from "sonner";
+     7→import {
+     8→  addMonths,
+     9→  addWeeks,
+    10→  eachDayOfInterval,
+    11→  endOfMonth,
+    12→  endOfWeek,
+    13→  format,
+    14→  isSameMonth,
+    15→  isToday,
+    16→  startOfMonth,
+    17→  startOfWeek,
+    18→} from "date-fns";
+    19→import { ru } from "date-fns/locale";
+    20→import { api, qs } from "@/lib/api-client";
+    21→import type { DoctorItem, LpuWithCity, Role, UserBasic, VisitItem } from "@/lib/types";
+    22→import { VISIT_STATUS_LABELS } from "@/lib/types";
+    23→import { DeleteButton, EmptyState, RowsSkeleton, StatusChip } from "@/components/shared/ui-bits";
+    24→import { Button } from "@/components/ui/button";
+    25→import { Input } from "@/components/ui/input";
+    26→import { Label } from "@/components/ui/label";
+    27→import { Textarea } from "@/components/ui/textarea";
+    28→import {
+    29→  Dialog,
+    30→  DialogContent,
+    31→  DialogDescription,
+    32→  DialogFooter,
+    33→  DialogHeader,
+    34→  DialogTitle,
+    35→} from "@/components/ui/dialog";
+    36→import {
+    37→  Select,
+    38→  SelectContent,
+    39→  SelectItem,
+    40→  SelectTrigger,
+    41→  SelectValue,
+    42→} from "@/components/ui/select";
+    43→import { ToggleGroup, ToggleGroupItem } from "@/components/ui/toggle-group";
+    44→import {
+    45→  CalendarDays,
+    46→  CalendarPlus,
+    47→  CalendarRange,
+    48→  ChevronLeft,
+    49→  ChevronRight,
+    50→  Plus,
+    51→} from "lucide-react";
+    52→import { cn } from "@/lib/utils";
+    53→
+    54→type ViewMode = "month" | "week";
+    55→type VisitStatus = VisitItem["status"];
+    56→
+    57→const WEEKDAYS = ["Пн", "Вт", "Ср", "Чт", "Пт", "Сб", "Вс"];
+    58→
+    59→/** Цвет чипа визита в сетке — по статусу (гайдлайн: лазурь / синий / терракот) */
+    60→const CHIP_BG: Record<VisitStatus, string> = {
+    61→  PLANNED: "bg-azure hover:bg-azure-dark",
+    62→  CONDUCTED: "bg-brand hover:bg-brand-dark",
+    63→  CANCELLED: "bg-terra hover:bg-terra-dark",
+    64→};
+    65→
+    66→const cap = (s: string) => s.charAt(0).toUpperCase() + s.slice(1);
+    67→const iso = (d: Date) => format(d, "yyyy-MM-dd");
+    68→
+    69→interface VisitForm {
+    70→  doctorId: string;
+    71→  lpuId: string; // "none" — ЛПУ не указан
+    72→  date: string; // yyyy-MM-dd
+    73→  purpose: string;
+    74→  comment: string;
+    75→  status: VisitStatus;
+    76→}
+    77→
+    78→export function CalendarView() {
+    79→  const qc = useQueryClient();
+    80→  const { data: session } = useSession();
+    81→  const isMP = (session?.user as { role?: Role } | undefined)?.role === "MP";
+    82→
+    83→  // —— Вид и навигация ——
+    84→  const [mode, setMode] = useState<ViewMode>("month");
+    85→  const [cursor, setCursor] = useState<Date>(new Date());
+    86→
+    87→  // —— Фильтры ("ALL" = без фильтра) ——
+    88→  const [mpFilter, setMpFilter] = useState("ALL");
+    89→  const [statusFilter, setStatusFilter] = useState("ALL");
+    90→  const [doctorFilter, setDoctorFilter] = useState("ALL");
+    91→
+    92→  // —— Диалог создания/редактирования ——
+    93→  const [dialogOpen, setDialogOpen] = useState(false);
+    94→  const [editing, setEditing] = useState<VisitItem | null>(null);
+    95→  const [form, setForm] = useState<VisitForm>({
+    96→    doctorId: "",
+    97→    lpuId: "none",
+    98→    date: format(new Date(), "yyyy-MM-dd"),
+    99→    purpose: "",
+   100→    comment: "",
+   101→    status: "PLANNED",
+   102→  });
+   103→
+   104→  // —— Справочники для фильтров и диалога ——
+   105→  const { data: users } = useQuery<UserBasic[]>({
+   106→    queryKey: ["users-basic"],
+   107→    queryFn: () => api.get("/api/app/users?basic=1"),
+   108→  });
+   109→  const mps = useMemo(() => (users ?? []).filter((u) => u.role === "MP"), [users]);
+   110→
+   111→  const { data: doctors } = useQuery<DoctorItem[]>({
+   112→    queryKey: ["doctors"],
+   113→    queryFn: () => api.get("/api/app/doctors"),
+   114→  });
+   115→  const doctorOptions = useMemo(
+   116→    () => (doctors ?? []).filter((d) => mpFilter === "ALL" || d.mpId === mpFilter),
+   117→    [doctors, mpFilter]
+   118→  );
+   119→
+   120→  // —— Период выборки (включая дни соседних месяцев в сетке) ——
+   121→  const range = useMemo(() => {
+   122→    if (mode === "month") {
+   123→      return {
+   124→        from: startOfWeek(startOfMonth(cursor), { weekStartsOn: 1 }),
+   125→        to: endOfWeek(endOfMonth(cursor), { weekStartsOn: 1 }),
+   126→      };
+   127→    }
+   128→    return {
+   129→      from: startOfWeek(cursor, { weekStartsOn: 1 }),
+   130→      to: endOfWeek(cursor, { weekStartsOn: 1 }),
+   131→    };
+   132→  }, [cursor, mode]);
+   133→
+   134→  // —— Визиты ——
+   135→  const visitsQuery = useQuery<VisitItem[]>({
+   136→    queryKey: [
+   137→      "visits",
+   138→      mode,
+   139→      iso(range.from),
+   140→      iso(range.to),
+   141→      mpFilter,
+   142→      statusFilter,
+   143→      doctorFilter,
+   144→    ],
+   145→    queryFn: () =>
+   146→      api.get<VisitItem[]>(
+   147→        `/api/app/visits${qs({
+   148→          from: iso(range.from),
+   149→          to: `${iso(range.to)}T23:59:59`,
+   150→          mpId: mpFilter === "ALL" ? undefined : mpFilter,
+   151→          status: statusFilter === "ALL" ? undefined : statusFilter,
+   152→          doctorId: doctorFilter === "ALL" ? undefined : doctorFilter,
+   153→        })}`
+   154→      ),
+   155→  });
+   156→
+   157→  // —— Группировка визитов по дням ——
+   158→  const grouped = useMemo(() => {
+   159→    const map = new Map<string, VisitItem[]>();
+   160→    (visitsQuery.data ?? []).forEach((v) => {
+   161→      const key = iso(new Date(v.date));
+   162→      const arr = map.get(key) ?? [];
+   163→      arr.push(v);
+   164→      map.set(key, arr);
+   165→    });
+   166→    return map;
+   167→  }, [visitsQuery.data]);
+   168→
+   169→  // —— Клетки месячной сетки (Пн–Вс) ——
+   170→  const days = useMemo(
+   171→    () => eachDayOfInterval({ start: range.from, end: range.to }),
+   172→    [range]
+   173→  );
+   174→
+   175→  const step = (dir: 1 | -1) =>
+   176→    setCursor(mode === "month" ? addMonths(cursor, dir) : addWeeks(cursor, dir));
+   177→
+   178→  // —— Диалог: открытие ——
+   179→  function openCreateForDay(day: Date) {
+   180→    setEditing(null);
+   181→    setForm({
+   182→      doctorId: "",
+   183→      lpuId: "none",
+   184→      date: iso(day),
+   185→      purpose: "",
+   186→      comment: "",
+   187→      status: "PLANNED",
+   188→    });
+   189→    setDialogOpen(true);
+   190→  }
+   191→  function openEdit(v: VisitItem) {
+   192→    setEditing(v);
+   193→    setForm({
+   194→      doctorId: v.doctorId,
+   195→      lpuId: v.lpuId ?? "none",
+   196→      date: iso(new Date(v.date)),
+   197→      purpose: v.purpose,
+   198→      comment: v.comment ?? "",
+   199→      status: v.status,
+   200→    });
+   201→    setDialogOpen(true);
+   202→  }
+   203→
+   204→  // —— Диалог: опции ЛПУ из привязок выбранного врача ——
+   205→  const selectedDoctor = (doctors ?? []).find((d) => d.id === form.doctorId);
+   206→  const lpuOptions = useMemo(() => {
+   207→    const opts: LpuWithCity[] = (selectedDoctor?.lpus ?? []).map((x) => x.lpu);
+   208→    const editLpu = editing?.lpu ?? null;
+   209→    if (editLpu && !opts.some((o) => o.id === editLpu.id)) {
+   210→      opts.unshift(editLpu);
+   211→    }
+   212→    return opts;
+   213→  }, [selectedDoctor, editing]);
+   214→
+   215→  // —— Мутации ——
+   216→  const save = useMutation({
+   217→    mutationFn: () => {
+   218→      const body = {
+   219→        doctorId: form.doctorId,
+   220→        lpuId: form.lpuId === "none" ? null : form.lpuId,
+   221→        date: form.date,
+   222→        purpose: form.purpose.trim(),
+   223→        comment: form.comment.trim() || null,
+   224→        status: form.status,
+   225→      };
+   226→      return editing
+   227→        ? api.put(`/api/app/visits/${editing.id}`, body)
+   228→        : api.post("/api/app/visits", body);
+   229→    },
+   230→    onSuccess: () => {
+   231→      toast.success(editing ? "Визит обновлен" : "Визит запланирован");
+   232→      setDialogOpen(false);
+   233→      qc.invalidateQueries({ queryKey: ["visits"] });
+   234→      qc.invalidateQueries({ queryKey: ["dashboard"] });
+   235→    },
+   236→    onError: (e: Error) => toast.error(e.message),
+   237→  });
+   238→
+   239→  const remove = useMutation({
+   240→    mutationFn: (id: string) => api.del(`/api/app/visits/${id}`),
+   241→    onSuccess: () => {
+   242→      toast.success("Визит удален");
+   243→      setDialogOpen(false);
+   244→      qc.invalidateQueries({ queryKey: ["visits"] });
+   245→      qc.invalidateQueries({ queryKey: ["dashboard"] });
+   246→    },
+   247→    onError: (e: Error) => toast.error(e.message),
+   248→  });
+   249→
+   250→  const periodTitle =
+   251→    mode === "month"
+   252→      ? cap(format(cursor, "LLLL yyyy", { locale: ru }))
+   253→      : `${cap(format(range.from, "d MMMM", { locale: ru }))} — ${format(
+   254→          range.to,
+   255→          "d MMMM yyyy",
+   256→          { locale: ru }
+   257→        )}`;
+   258→
+   259→  const noVisits =
+   260→    !visitsQuery.isLoading && !visitsQuery.error && (visitsQuery.data ?? []).length === 0;
+   261→
+   262→  return (
+   263→    <div className="space-y-6">
+   264→      {/* —— Фильтры —— */}
+   265→      <SectionFilters
+   266→        mps={mps}
+   267→        mpFilter={mpFilter}
+   268→        setMpFilter={setMpFilter}
+   269→        statusFilter={statusFilter}
+   270→        setStatusFilter={setStatusFilter}
+   271→        doctorOptions={doctorOptions}
+   272→        doctorFilter={doctorFilter}
+   273→        setDoctorFilter={setDoctorFilter}
+   274→        onCreate={() => openCreateForDay(new Date())}
+   275→      />
+   276→
+   277→      {/* —— Календарь —— */}
+   278→      <section className="rounded-xl border border-border bg-white p-6 shadow-[0_2px_12px_rgba(25,70,136,0.05)]">
+   279→        {/* Навигация периода */}
+   280→        <div className="mb-5 flex flex-wrap items-center justify-between gap-3">
+   281→          <div className="flex items-center gap-2">
+   282→            <Button
+   283→              variant="ghost"
+   284→              size="icon"
+   285→              className="h-8 w-8 text-brand hover:bg-sky-light"
+   286→              onClick={() => step(-1)}
+   287→              aria-label="Предыдущий период"
+   288→            >
+   289→              <ChevronLeft className="h-4 w-4" strokeWidth={2} />
+   290→            </Button>
+   291→            <h2 className="font-display text-lg font-bold text-brand min-w-[190px] text-center">
+   292→              {periodTitle}
+   293→            </h2>
+   294→            <Button
+   295→              variant="ghost"
+   296→              size="icon"
+   297→              className="h-8 w-8 text-brand hover:bg-sky-light"
+   298→              onClick={() => step(1)}
+   299→              aria-label="Следующий период"
+   300→            >
+   301→              <ChevronRight className="h-4 w-4" strokeWidth={2} />
+   302→            </Button>
+   303→            <Button
+   304→              variant="outline"
+   305→              size="sm"
+   306→              className="ml-2 h-8 border-sky/40 text-brand hover:bg-sky-light"
+   307→              onClick={() => setCursor(new Date())}
+   308→            >
+   309→              Сегодня
+   310→            </Button>
+   311→          </div>
+   312→          <ToggleGroup
+   313→            type="single"
+   314→            size="sm"
+   315→            value={mode}
+   316→            onValueChange={(v) => {
+   317→              if (v === "month" || v === "week") setMode(v);
+   318→            }}
+   319→            className="rounded-lg border border-border bg-soft p-1"
+   320→          >
+   321→            <ToggleGroupItem
+   322→              value="month"
+   323→              className="gap-1.5 rounded-md px-3 text-xs data-[state=on]:bg-sky-light data-[state=on]:text-brand"
+   324→            >
+   325→              <CalendarDays className="h-3.5 w-3.5" strokeWidth={2} /> Месяц
+   326→            </ToggleGroupItem>
+   327→            <ToggleGroupItem
+   328→              value="week"
+   329→              className="gap-1.5 rounded-md px-3 text-xs data-[state=on]:bg-sky-light data-[state=on]:text-brand"
+   330→            >
+   331→              <CalendarRange className="h-3.5 w-3.5" strokeWidth={2} /> Неделя
+   332→            </ToggleGroupItem>
+   333→          </ToggleGroup>
+   334→        </div>
+   335→
+   336→        {visitsQuery.error ? (
+   337→          <div className="rounded-xl border border-terra/50 bg-terra-light p-6 text-sm text-brand-dark">
+   338→            Не удалось загрузить визиты: {(visitsQuery.error as Error).message}
+   339→          </div>
+   340→        ) : visitsQuery.isLoading ? (
+   341→          <RowsSkeleton rows={6} />
+   342→        ) : (
+   343→          <>
+   344→            {noVisits && (
+   345→              <EmptyState
+   346→                title="Визитов в выбранном периоде нет"
+   347→                hint="Кликните по дню в календаре или нажмите «Запланировать визит»"
+   348→                className="py-6"
+   349→              />
+   350→            )}
+   351→
+   352→            {mode === "month" ? (
+   353→              <>
+   354→                {/* Шапка дней недели */}
+   355→                <div className="mb-2 grid grid-cols-7 gap-2">
+   356→                  {WEEKDAYS.map((w) => (
+   357→                    <div
+   358→                      key={w}
+   359→                      className="text-center text-[11px] font-semibold uppercase tracking-wide text-sky"
+   360→                    >
+   361→                      {w}
+   362→                    </div>
+   363→                  ))}
+   364→                </div>
+   365→                {/* Сетка месяца */}
+   366→                <div className="grid grid-cols-7 gap-2">
+   367→                  {days.map((day) => {
+   368→                    const key = iso(day);
+   369→                    const list = grouped.get(key) ?? [];
+   370→                    const dim = !isSameMonth(day, cursor);
+   371→                    return (
+   372→                      <div
+   373→                        key={key}
+   374→                        onClick={() => openCreateForDay(day)}
+   375→                        className={cn(
+   376→                          "group/cell flex min-h-[112px] cursor-pointer flex-col gap-1 rounded-lg border p-1.5 transition-colors",
+   377→                          dim ? "border-border/60 bg-soft" : "border-border bg-white hover:border-sky/50",
+   378→                          isToday(day) && "border-azure/60 bg-sky-light/50 ring-1 ring-azure"
+   379→                        )}
+   380→                      >
+   381→                        <div className="flex items-center justify-between">
+   382→                          <span
+   383→                            className={cn(
+   384→                              "inline-flex h-5 w-5 items-center justify-center rounded-full font-display text-[11px] font-bold",
+   385→                              isToday(day)
+   386→                                ? "bg-azure text-white"
+   387→                                : dim
+   388→                                  ? "text-muted-foreground/50"
+   389→                                  : "text-brand"
+   390→                            )}
+   391→                          >
+   392→                            {day.getDate()}
+   393→                          </span>
+   394→                          <button
+   395→                            type="button"
+   396→                            onClick={(e) => {
+   397→                              e.stopPropagation();
+   398→                              openCreateForDay(day);
+   399→                            }}
+   400→                            className="text-sky opacity-0 transition-opacity hover:text-azure group-hover/cell:opacity-100"
+   401→                            aria-label={`Запланировать визит на ${key}`}
+   402→                          >
+   403→                            <Plus className="h-3.5 w-3.5" strokeWidth={2} />
+   404→                          </button>
+   405→                        </div>
+   406→                        <div className="flex flex-col gap-1">
+   407→                          {list.slice(0, 3).map((v) => (
+   408→                            <button
+   409→                              key={v.id}
+   410→                              type="button"
+   411→                              onClick={(e) => {
+   412→                                e.stopPropagation();
+   413→                                openEdit(v);
+   414→                              }}
+   415→                              title={`${v.doctor?.fullName ?? "—"} · ${v.purpose}`}
+   416→                              className={cn(
+   417→                                "w-full truncate rounded-md px-1.5 py-0.5 text-left text-[10px] font-medium text-white transition-opacity",
+   418→                                CHIP_BG[v.status],
+   419→                                dim && "opacity-60"
+   420→                              )}
+   421→                            >
+   422→                              {v.doctor?.fullName ?? "Врач"}
+   423→                            </button>
+   424→                          ))}
+   425→                          {list.length > 3 && (
+   426→                            <span className="px-1 font-display text-[10px] font-semibold text-sky">
+   427→                              +{list.length - 3} ещё
+   428→                            </span>
+   429→                          )}
+   430→                        </div>
+   431→                      </div>
+   432→                    );
+   433→                  })}
+   434→                </div>
+   435→              </>
+   436→            ) : (
+   437→              /* —— Сетка недели —— */
+   438→              <div className="grid grid-cols-7 gap-3">
+   439→                {days.map((day) => {
+   440→                  const key = iso(day);
+   441→                  const list = grouped.get(key) ?? [];
+   442→                  return (
+   443→                    <div
+   444→                      key={key}
+   445→                      className={cn(
+   446→                        "flex min-h-[400px] flex-col rounded-lg border",
+   447→                        isToday(day)
+   448→                          ? "border-azure/60 bg-sky-light/40"
+   449→                          : "border-border bg-white"
+   450→                      )}
+   451→                    >
+   452→                      <div className="border-b border-border/70 px-2 py-2 text-center">
+   453→                        <div className="text-[10px] uppercase tracking-wide text-muted-foreground">
+   454→                          {cap(format(day, "EEEEEE", { locale: ru }))}
+   455→                        </div>
+   456→                        <div
+   457→                          className={cn(
+   458→                            "font-display text-sm font-bold",
+   459→                            isToday(day) ? "text-azure" : "text-brand"
+   460→                          )}
+   461→                        >
+   462→                          {format(day, "d MMMM", { locale: ru })}
+   463→                        </div>
+   464→                      </div>
+   465→                      <div className="flex flex-1 flex-col gap-2 p-2">
+   466→                        {list.map((v) => (
+   467→                          <button
+   468→                            key={v.id}
+   469→                            type="button"
+   470→                            onClick={() => openEdit(v)}
+   471→                            className="w-full rounded-lg border border-border bg-white p-2.5 text-left shadow-[0_1px_6px_rgba(25,70,136,0.06)] transition-colors hover:border-azure/60"
+   472→                          >
+   473→                            <p className="truncate text-xs font-semibold text-brand">
+   474→                              {v.doctor?.fullName ?? "—"}
+   475→                            </p>
+   476→                            <p className="mt-0.5 line-clamp-2 text-[11px] text-muted-foreground">
+   477→                              {v.purpose}
+   478→                            </p>
+   479→                            {v.lpu && (
+   480→                              <p className="mt-1 truncate text-[10px] text-sky">{v.lpu.name}</p>
+   481→                            )}
+   482→                            <div className="mt-1.5">
+   483→                              <StatusChip status={v.status} />
+   484→                            </div>
+   485→                          </button>
+   486→                        ))}
+   487→                        <button
+   488→                          type="button"
+   489→                          onClick={() => openCreateForDay(day)}
+   490→                          className="mt-auto flex items-center justify-center gap-1 rounded-md border border-dashed border-sky/40 py-1.5 text-[10px] font-medium text-sky transition-colors hover:border-azure hover:text-azure"
+   491→                        >
+   492→                          <Plus className="h-3 w-3" strokeWidth={2} /> Добавить
+   493→                        </button>
+   494→                      </div>
+   495→                    </div>
+   496→                  );
+   497→                })}
+   498→              </div>
+   499→            )}
+   500→
+   501→            {/* Легенда статусов */}
+   502→            <div className="mt-5 flex flex-wrap items-center gap-4 border-t border-border/60 pt-4 text-xs text-muted-foreground">
+   503→              <span className="font-medium text-brand">Легенда:</span>
+   504→              <span className="inline-flex items-center gap-1.5">
+   505→                <span className="h-2.5 w-2.5 rounded-full bg-azure" /> Запланирован
+   506→              </span>
+   507→              <span className="inline-flex items-center gap-1.5">
+   508→                <span className="h-2.5 w-2.5 rounded-full bg-brand" /> Проведен
+   509→              </span>
+   510→              <span className="inline-flex items-center gap-1.5">
+   511→                <span className="h-2.5 w-2.5 rounded-full bg-terra" /> Отменен
+   512→              </span>
+   513→            </div>
+   514→          </>
+   515→        )}
+   516→      </section>
+   517→
+   518→      {/* —— Диалог создания/редактирования визита —— */}
+   519→      <Dialog open={dialogOpen} onOpenChange={setDialogOpen}>
+   520→        <DialogContent className="sm:max-w-lg">
+   521→          <DialogHeader>
+   522→            <DialogTitle className="font-display text-brand">
+   523→              {editing ? "Редактирование визита" : "Новый визит к НВ"}
+   524→            </DialogTitle>
+   525→            <DialogDescription>
+   526→              {editing
+   527→                ? "Обновите данные визита — изменения попадут в журнал аудита."
+   528→                : "Заполните поля — врач, дата и цель обязательны."}
+   529→            </DialogDescription>
+   530→          </DialogHeader>
+   531→          <div className="grid grid-cols-1 gap-4 py-2 sm:grid-cols-2">
+   532→            <div className="space-y-1.5 sm:col-span-2">
+   533→              <Label>
+   534→                Врач (НВ) <span className="text-terra-dark">*</span>
+   535→              </Label>
+   536→              <Select
+   537→                value={form.doctorId}
+   538→                onValueChange={(v) =>
+   539→                  setForm((f) => ({ ...f, doctorId: v, lpuId: "none" }))
+   540→                }
+   541→              >
+   542→                <SelectTrigger className="bg-white">
+   543→                  <SelectValue placeholder="Выберите врача" />
+   544→                </SelectTrigger>
+   545→                <SelectContent className="max-h-60">
+   546→                  {(doctors ?? []).map((d) => (
+   547→                    <SelectItem key={d.id} value={d.id}>
+   548→                      {d.fullName}
+   549→                    </SelectItem>
+   550→                  ))}
+   551→                </SelectContent>
+   552→              </Select>
+   553→            </div>
+   554→            <div className="space-y-1.5 sm:col-span-2">
+   555→              <Label>ЛПУ (из привязок врача)</Label>
+   556→              <Select
+   557→                value={form.lpuId}
+   558→                onValueChange={(v) => setForm((f) => ({ ...f, lpuId: v }))}
+   559→                disabled={!form.doctorId}
+   560→              >
+   561→                <SelectTrigger className="bg-white">
+   562→                  <SelectValue placeholder="Не указывать" />
+   563→                </SelectTrigger>
+   564→                <SelectContent>
+   565→                  <SelectItem value="none">Не указывать</SelectItem>
+   566→                  {lpuOptions.map((l) => (
+   567→                    <SelectItem key={l.id} value={l.id}>
+   568→                      {l.name}
+   569→                    </SelectItem>
+   570→                  ))}
+   571→                </SelectContent>
+   572→              </Select>
+   573→            </div>
+   574→            <div className="space-y-1.5">
+   575→              <Label>
+   576→                Дата <span className="text-terra-dark">*</span>
+   577→              </Label>
+   578→              <Input
+   579→                type="date"
+   580→                value={form.date}
+   581→                onChange={(e) => setForm((f) => ({ ...f, date: e.target.value }))}
+   582→                className="bg-white"
+   583→              />
+   584→            </div>
+   585→            <div className="space-y-1.5">
+   586→              <Label>Статус</Label>
+   587→              <Select
+   588→                value={form.status}
+   589→                onValueChange={(v) =>
+   590→                  setForm((f) => ({ ...f, status: v as VisitStatus }))
+   591→                }
+   592→              >
+   593→                <SelectTrigger className="bg-white">
+   594→                  <SelectValue />
+   595→                </SelectTrigger>
+   596→                <SelectContent>
+   597→                  {(
+   598→                    Object.entries(VISIT_STATUS_LABELS) as Array<[VisitStatus, string]>
+   599→                  ).map(([value, label]) => (
+   600→                    <SelectItem key={value} value={value}>
+   601→                      {label}
+   602→                    </SelectItem>
+   603→                  ))}
+   604→                </SelectContent>
+   605→              </Select>
+   606→            </div>
+   607→            <div className="space-y-1.5 sm:col-span-2">
+   608→              <Label>
+   609→                Цель визита <span className="text-terra-dark">*</span>
+   610→              </Label>
+   611→              <Input
+   612→                value={form.purpose}
+   613→                onChange={(e) => setForm((f) => ({ ...f, purpose: e.target.value }))}
+   614→                placeholder="Например: презентация новых протоколов МРТ"
+   615→                className="bg-white"
+   616→              />
+   617→            </div>
+   618→            <div className="space-y-1.5 sm:col-span-2">
+   619→              <Label>Комментарий</Label>
+   620→              <Textarea
+   621→                rows={3}
+   622→                value={form.comment}
+   623→                onChange={(e) => setForm((f) => ({ ...f, comment: e.target.value }))}
+   624→                placeholder="Дополнительная информация о встрече…"
+   625→                className="bg-white"
+   626→              />
+   627→            </div>
+   628→          </div>
+   629→          <DialogFooter className="sm:justify-between">
+   630→            {editing && isMP ? (
+   631→              <DeleteButton
+   632→                title={`Удалить визит к «${editing.doctor?.fullName ?? "врачу"}»?`}
+   633→                description="Визит будет удален безвозвратно, действие попадет в журнал аудита."
+   634→                onConfirm={async () => {
+   635→                  await remove.mutateAsync(editing.id);
+   636→                }}
+   637→              />
+   638→            ) : (
+   639→              <span />
+   640→            )}
+   641→            <div className="flex gap-2">
+   642→              <Button variant="outline" onClick={() => setDialogOpen(false)}>
+   643→                Отмена
+   644→              </Button>
+   645→              <Button
+   646→                onClick={() => save.mutate()}
+   647→                disabled={
+   648→                  !form.doctorId || !form.date || !form.purpose.trim() || save.isPending
+   649→                }
+   650→                className="gap-1.5"
+   651→              >
+   652→                <CalendarPlus className="h-4 w-4" strokeWidth={2} />
+   653→                {editing ? "Сохранить" : "Создать"}
+   654→              </Button>
+   655→            </div>
+   656→          </DialogFooter>
+   657→        </DialogContent>
+   658→      </Dialog>
+   659→    </div>
+   660→  );
+   661→}
+   662→
+   663→/* ============ Панель фильтров ============ */
+   664→function SectionFilters({
+   665→  mps,
+   666→  mpFilter,
+   667→  setMpFilter,
+   668→  statusFilter,
+   669→  setStatusFilter,
+   670→  doctorOptions,
+   671→  doctorFilter,
+   672→  setDoctorFilter,
+   673→  onCreate,
+   674→}: {
+   675→  mps: UserBasic[];
+   676→  mpFilter: string;
+   677→  setMpFilter: (v: string) => void;
+   678→  statusFilter: string;
+   679→  setStatusFilter: (v: string) => void;
+   680→  doctorOptions: DoctorItem[];
+   681→  doctorFilter: string;
+   682→  setDoctorFilter: (v: string) => void;
+   683→  onCreate: () => void;
+   684→}) {
+   685→  return (
+   686→    <section className="rounded-xl border border-border bg-white p-6 shadow-[0_2px_12px_rgba(25,70,136,0.05)]">
+   687→      <div className="mb-4 flex flex-wrap items-center justify-between gap-3">
+   688→        <div>
+   689→          <h3 className="font-display text-base font-bold text-brand">Фильтры</h3>
+   690→          <p className="mt-0.5 text-xs text-muted-foreground">
+   691→            Отбор визитов по сотруднику, врачу и статусу
+   692→          </p>
+   693→        </div>
+   694→        <Button onClick={onCreate} className="gap-1.5">
+   695→          <CalendarPlus className="h-4 w-4" strokeWidth={2} /> Запланировать визит
+   696→        </Button>
+   697→      </div>
+   698→      <div className="grid grid-cols-1 gap-4 md:grid-cols-3">
+   699→        <div className="space-y-1.5">
+   700→          <Label className="text-xs text-muted-foreground">Медицинский представитель</Label>
+   701→          <Select value={mpFilter} onValueChange={setMpFilter}>
+   702→            <SelectTrigger className="bg-white">
+   703→              <SelectValue />
+   704→            </SelectTrigger>
+   705→            <SelectContent>
+   706→              <SelectItem value="ALL">Все МП</SelectItem>
+   707→              {mps.map((u) => (
+   708→                <SelectItem key={u.id} value={u.id}>
+   709→                  {u.name}
+   710→                </SelectItem>
+   711→              ))}
+   712→            </SelectContent>
+   713→          </Select>
+   714→        </div>
+   715→        <div className="space-y-1.5">
+   716→          <Label className="text-xs text-muted-foreground">Статус визита</Label>
+   717→          <Select value={statusFilter} onValueChange={setStatusFilter}>
+   718→            <SelectTrigger className="bg-white">
+   719→              <SelectValue />
+   720→            </SelectTrigger>
+   721→            <SelectContent>
+   722→              <SelectItem value="ALL">Все статусы</SelectItem>
+   723→              {(
+   724→                Object.entries(VISIT_STATUS_LABELS) as Array<[VisitStatus, string]>
+   725→              ).map(([value, label]) => (
+   726→                <SelectItem key={value} value={value}>
+   727→                  {label}
+   728→                </SelectItem>
+   729→              ))}
+   730→            </SelectContent>
+   731→          </Select>
+   732→        </div>
+   733→        <div className="space-y-1.5">
+   734→          <Label className="text-xs text-muted-foreground">Врач (НВ)</Label>
+   735→          <Select value={doctorFilter} onValueChange={setDoctorFilter}>
+   736→            <SelectTrigger className="bg-white">
+   737→              <SelectValue />
+   738→            </SelectTrigger>
+   739→            <SelectContent className="max-h-60">
+   740→              <SelectItem value="ALL">Все врачи</SelectItem>
+   741→              {doctorOptions.map((d) => (
+   742→                <SelectItem key={d.id} value={d.id}>
+   743→                  {d.fullName}
+   744→                </SelectItem>
+   745→              ))}
+   746→            </SelectContent>
+   747→          </Select>
+   748→        </div>
+   749→      </div>
+   750→    </section>
+   751→  );
+   752→}
+   753→

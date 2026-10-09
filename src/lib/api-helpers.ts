@@ -16,7 +16,7 @@ export async function getSession(): Promise<SessionUser | null> {
   return {
     uid: session.user.uid,
     name: session.user.name ?? "",
-    role: session.user.role,
+    role: session.user.role ?? "OPERATOR",
   };
 }
 

@@ -1,0 +1,1139 @@
+     1→"use client";
+     2→
+     3→import { useMemo, useState } from "react";
+     4→import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+     5→import { toast } from "sonner";
+     6→import { format, subDays } from "date-fns";
+     7→import * as XLSX from "xlsx";
+     8→import jsPDF from "jspdf";
+     9→import autoTable from "jspdf-autotable";
+    10→import {
+    11→  BarChart3,
+    12→  Bookmark,
+    13→  Building2,
+    14→  CheckCircle2,
+    15→  Coins,
+    16→  FileDown,
+    17→  FileSpreadsheet,
+    18→  Loader2,
+    19→  Package,
+    20→  Play,
+    21→  Save,
+    22→  SlidersHorizontal,
+    23→  Stethoscope,
+    24→  UserRound,
+    25→} from "lucide-react";
+    26→import { api, qs } from "@/lib/api-client";
+    27→import type {
+    28→  CityData,
+    29→  DoctorItem,
+    30→  NomenclatureItem,
+    31→  ReportGroupNode,
+    32→  ReportPreset,
+    33→  ReportRequestRow,
+    34→  ReportV2Response,
+    35→  UserBasic,
+    36→} from "@/lib/types";
+    37→import {
+    38→  DeleteButton,
+    39→  EmptyState,
+    40→  RowsSkeleton,
+    41→  fmtDate,
+    42→  fmtDateTime,
+    43→} from "@/components/shared/ui-bits";
+    44→import { Button } from "@/components/ui/button";
+    45→import { Input } from "@/components/ui/input";
+    46→import { Label } from "@/components/ui/label";
+    47→import { Switch } from "@/components/ui/switch";
+    48→import {
+    49→  Dialog,
+    50→  DialogContent,
+    51→  DialogDescription,
+    52→  DialogFooter,
+    53→  DialogHeader,
+    54→  DialogTitle,
+    55→} from "@/components/ui/dialog";
+    56→import {
+    57→  Popover,
+    58→  PopoverContent,
+    59→  PopoverTrigger,
+    60→} from "@/components/ui/popover";
+    61→import {
+    62→  Select,
+    63→  SelectContent,
+    64→  SelectItem,
+    65→  SelectTrigger,
+    66→  SelectValue,
+    67→} from "@/components/ui/select";
+    68→import { cn } from "@/lib/utils";
+    69→
+    70→/* ============================================================
+    71→   Отчет «По обследованиям» в стиле 1С:Предприятие:
+    72→   окно формы + панель инструментов с желтой кнопкой
+    73→   «Сформировать», строка «Параметры: …», иерархическая таблица
+    74→   с деревом групп (рекурсивные ReportGroupNode) и строкой «Итого».
+    75→   Отчет строится ТОЛЬКО по нажатию кнопки (как в 1С).
+    76→   ============================================================ */
+    77→
+    78→type ReportVariant = ReportV2Response["variant"];
+    79→
+    80→const VARIANT_LABELS: Record<ReportVariant, string> = {
+    81→  mp: "По МП",
+    82→  lpu: "По ЛПУ",
+    83→  doctor: "По НВ",
+    84→  nomenclature: "По Номенклатуре",
+    85→};
+    86→
+    87→const GROUP_BY_LABELS: Record<ReportVariant, string> = {
+    88→  mp: "МП → ЛПУ → НВ",
+    89→  lpu: "ЛПУ → НВ",
+    90→  doctor: "НВ",
+    91→  nomenclature: "Номенклатура",
+    92→};
+    93→
+    94→const LEVEL_ICONS: Record<ReportGroupNode["level"], React.ElementType> = {
+    95→  mp: UserRound,
+    96→  lpu: Building2,
+    97→  doctor: Stethoscope,
+    98→  nomenclature: Package,
+    99→};
+   100→
+   101→interface ReportFilters {
+   102→  from: string;
+   103→  to: string;
+   104→  mpId: string;
+   105→  lpuId: string;
+   106→  doctorId: string;
+   107→  assignedId: string;
+   108→  done: string; // "" | "1" | "0"
+   109→  variant: ReportVariant;
+   110→}
+   111→
+   112→function defaultFilters(): ReportFilters {
+   113→  return {
+   114→    from: format(subDays(new Date(), 90), "yyyy-MM-dd"),
+   115→    to: format(new Date(), "yyyy-MM-dd"),
+   116→    mpId: "",
+   117→    lpuId: "",
+   118→    doctorId: "",
+   119→    assignedId: "",
+   120→    done: "",
+   121→    variant: "mp",
+   122→  };
+   123→}
+   124→
+   125→/* ============================================================
+   126→   Транслитерация для PDF (jsPDF стандартно не поддерживает
+   127→   кириллицу) — простая карта а-я → a-ya
+   128→   ============================================================ */
+   129→const TRANSLIT: Record<string, string> = {
+   130→  а: "a", б: "b", в: "v", г: "g", д: "d", е: "e", ё: "e", ж: "zh", з: "z",
+   131→  и: "i", й: "y", к: "k", л: "l", м: "m", н: "n", о: "o", п: "p", р: "r",
+   132→  с: "s", т: "t", у: "u", ф: "f", х: "kh", ц: "ts", ч: "ch", ш: "sh",
+   133→  щ: "sch", ъ: "", ы: "y", ь: "", э: "e", ю: "yu", я: "ya",
+   134→};
+   135→
+   136→function translit(value: string): string {
+   137→  return (value ?? "")
+   138→    .split("")
+   139→    .map((ch) => {
+   140→      const lower = ch.toLowerCase();
+   141→      const t = TRANSLIT[lower];
+   142→      if (t === undefined) return ch; // латиница, цифры, пунктуация — как есть
+   143→      if (t === "") return "";
+   144→      if (ch !== lower) return t.charAt(0).toUpperCase() + t.slice(1);
+   145→      return t;
+   146→    })
+   147→    .join("");
+   148→}
+   149→
+   150→/* ============================================================ */
+   151→
+   152→const pct = (done: number, total: number) =>
+   153→  total > 0 ? Math.round((done / total) * 100) : 0;
+   154→
+   155→function pctBadgeClass(p: number): string {
+   156→  if (p >= 66) return "bg-azure/15 text-azure-dark";
+   157→  if (p >= 33) return "bg-sky-light text-brand";
+   158→  return "bg-terra-light text-terra-dark";
+   159→}
+   160→
+   161→/* —— Плоские строки экспорта: обход рекурсивного дерева —— */
+   162→
+   163→interface ExportRow {
+   164→  mp: string;
+   165→  lpu: string;
+   166→  city: string;
+   167→  doctor: string;
+   168→  nom: string;
+   169→  date: string;
+   170→  patient: string;
+   171→  destination: string;
+   172→  assigned: string;
+   173→  done: string;
+   174→}
+   175→
+   176→type GroupCtx = { mp?: string; lpu?: string; city?: string; doctor?: string; nom?: string };
+   177→
+   178→function collectRows(node: ReportGroupNode, ctx: GroupCtx, out: ExportRow[]): void {
+   179→  const next: GroupCtx = { ...ctx };
+   180→  if (node.level === "mp") next.mp = node.name;
+   181→  else if (node.level === "lpu") {
+   182→    next.lpu = node.name;
+   183→    next.city = node.subtitle || ctx.city || "";
+   184→  } else if (node.level === "doctor") next.doctor = node.name;
+   185→  else next.nom = node.name;
+   186→
+   187→  if (node.children.length) {
+   188→    node.children.forEach((child) => collectRows(child, next, out));
+   189→  } else {
+   190→    node.requests.forEach((r) =>
+   191→      out.push({
+   192→        mp: next.mp ?? r.mpName ?? "",
+   193→        lpu: next.lpu ?? r.lpuName ?? "",
+   194→        city: next.city ?? r.cityName ?? "",
+   195→        doctor: next.doctor ?? r.doctorName ?? "",
+   196→        nom: next.nom ?? r.assigned ?? "",
+   197→        date: fmtDate(r.date),
+   198→        patient: r.patientName,
+   199→        destination: r.destination ?? "—",
+   200→        assigned: r.assigned ?? "—",
+   201→        done: r.done ?? "Не выполнено",
+   202→      })
+   203→    );
+   204→  }
+   205→}
+   206→
+   207→type ExportColKey = keyof ExportRow;
+   208→
+   209→/** Колонки экспорта по варианту отчета */
+   210→const EXPORT_COLS: Record<ReportVariant, Array<{ key: ExportColKey; title: string }>> = {
+   211→  mp: [
+   212→    { key: "mp", title: "МП" },
+   213→    { key: "lpu", title: "ЛПУ" },
+   214→    { key: "city", title: "Город" },
+   215→    { key: "doctor", title: "НВ" },
+   216→    { key: "date", title: "Дата" },
+   217→    { key: "patient", title: "Пациент" },
+   218→    { key: "destination", title: "Куда направление" },
+   219→    { key: "assigned", title: "Что назначено" },
+   220→    { key: "done", title: "Что сделано" },
+   221→  ],
+   222→  lpu: [
+   223→    { key: "lpu", title: "ЛПУ" },
+   224→    { key: "city", title: "Город" },
+   225→    { key: "doctor", title: "НВ" },
+   226→    { key: "date", title: "Дата" },
+   227→    { key: "patient", title: "Пациент" },
+   228→    { key: "destination", title: "Куда направление" },
+   229→    { key: "assigned", title: "Что назначено" },
+   230→    { key: "done", title: "Что сделано" },
+   231→  ],
+   232→  doctor: [
+   233→    { key: "doctor", title: "НВ" },
+   234→    { key: "lpu", title: "ЛПУ" },
+   235→    { key: "mp", title: "МП" },
+   236→    { key: "date", title: "Дата" },
+   237→    { key: "patient", title: "Пациент" },
+   238→    { key: "destination", title: "Куда направление" },
+   239→    { key: "assigned", title: "Что назначено" },
+   240→    { key: "done", title: "Что сделано" },
+   241→  ],
+   242→  nomenclature: [
+   243→    { key: "nom", title: "Номенклатура" },
+   244→    { key: "date", title: "Дата" },
+   245→    { key: "patient", title: "Пациент" },
+   246→    { key: "doctor", title: "НВ" },
+   247→    { key: "lpu", title: "ЛПУ" },
+   248→    { key: "mp", title: "МП" },
+   249→    { key: "destination", title: "Куда направление" },
+   250→    { key: "assigned", title: "Что назначено" },
+   251→    { key: "done", title: "Что сделано" },
+   252→  ],
+   253→};
+   254→
+   255→const EXPORT_WIDTHS: Record<ExportColKey, number> = {
+   256→  mp: 22, lpu: 28, city: 16, doctor: 28, nom: 26,
+   257→  date: 12, patient: 24, destination: 24, assigned: 26, done: 24,
+   258→};
+   259→
+   260→/* —— Колонки детализации в таблице (зависят от варианта) —— */
+   261→
+   262→type DetailKey = "date" | "patient" | "doctor" | "lpu" | "mp" | "destination" | "assigned" | "done";
+   263→
+   264→function buildDetailCols(variant: ReportVariant): Array<{ key: DetailKey; label: string }> {
+   265→  const cols: Array<{ key: DetailKey; label: string }> = [
+   266→    { key: "date", label: "Дата" },
+   267→    { key: "patient", label: "Пациент" },
+   268→  ];
+   269→  if (variant !== "doctor") cols.push({ key: "doctor", label: "НВ" });
+   270→  if (variant !== "lpu") cols.push({ key: "lpu", label: "ЛПУ" });
+   271→  if (variant === "doctor" || variant === "nomenclature") cols.push({ key: "mp", label: "МП" });
+   272→  cols.push(
+   273→    { key: "destination", label: "Куда направление" },
+   274→    { key: "assigned", label: "Что назначено" },
+   275→    { key: "done", label: "Что сделано" }
+   276→  );
+   277→  return cols;
+   278→}
+   279→
+   280→/* —— Состояние раскрытия дерева: первый уровень раскрыт по умолчанию —— */
+   281→
+   282→interface TreeExpansion {
+   283→  /** глубже первого уровня: раскрыты вручную */
+   284→  open: Set<string>;
+   285→  /** первый уровень: свернуты вручную */
+   286→  closed: Set<string>;
+   287→}
+   288→
+   289→const EMPTY_EXPANSION: TreeExpansion = { open: new Set(), closed: new Set() };
+   290→
+   291→/* ============================================================
+   292→   Основной компонент
+   293→   ============================================================ */
+   294→
+   295→export function ReportsView() {
+   296→  const qc = useQueryClient();
+   297→
+   298→  // —— Настройки (черновик) vs примененные фильтры (отчет строится по кнопке) ——
+   299→  const [draft, setDraft] = useState<ReportFilters>(defaultFilters);
+   300→  const [applied, setApplied] = useState<ReportFilters | null>(null);
+   301→  const [runId, setRunId] = useState(0);
+   302→
+   303→  // —— Служебные состояния ——
+   304→  const [settingsOpen, setSettingsOpen] = useState(false);
+   305→  const [presetsOpen, setPresetsOpen] = useState(false);
+   306→  const [saveOpen, setSaveOpen] = useState(false);
+   307→  const [presetName, setPresetName] = useState("");
+   308→  const [treeState, setTreeState] = useState<TreeExpansion>(EMPTY_EXPANSION);
+   309→
+   310→  // —— Справочники ——
+   311→  const { data: users } = useQuery<UserBasic[]>({
+   312→    queryKey: ["users-basic"],
+   313→    queryFn: () => api.get("/api/app/users?basic=1"),
+   314→  });
+   315→  const mps = useMemo(() => (users ?? []).filter((u) => u.role === "MP"), [users]);
+   316→
+   317→  const { data: lpus } = useQuery<CityData[]>({
+   318→    queryKey: ["lpus"],
+   319→    queryFn: () => api.get("/api/app/lpus"),
+   320→  });
+   321→
+   322→  const { data: doctors } = useQuery<DoctorItem[]>({
+   323→    queryKey: ["doctors"],
+   324→    queryFn: () => api.get("/api/app/doctors"),
+   325→  });
+   326→  const doctorOptions = useMemo(
+   327→    () => (doctors ?? []).filter((d) => !draft.mpId || d.mpId === draft.mpId),
+   328→    [doctors, draft.mpId]
+   329→  );
+   330→
+   331→  const { data: nomenclature } = useQuery<NomenclatureItem[]>({
+   332→    queryKey: ["nomenclature-active"],
+   333→    queryFn: () => api.get("/api/app/nomenclature?active=1"),
+   334→  });
+   335→
+   336→  const { data: presets } = useQuery<ReportPreset[]>({
+   337→    queryKey: ["presets"],
+   338→    queryFn: () => api.get("/api/app/presets"),
+   339→  });
+   340→
+   341→  // —— Отчет: включается только после нажатия «Сформировать» ——
+   342→  const reportQuery = useQuery<ReportV2Response>({
+   343→    queryKey: [
+   344→      "report-examinations-v2",
+   345→      runId,
+   346→      applied?.from ?? "",
+   347→      applied?.to ?? "",
+   348→      applied?.mpId ?? "",
+   349→      applied?.lpuId ?? "",
+   350→      applied?.doctorId ?? "",
+   351→      applied?.assignedId ?? "",
+   352→      applied?.done ?? "",
+   353→      applied?.variant ?? "",
+   354→    ],
+   355→    queryFn: async () => {
+   356→      if (!applied) throw new Error("Отчет не сформирован");
+   357→      return api.get<ReportV2Response>(
+   358→        `/api/app/reports/examinations${qs({
+   359→          from: applied.from,
+   360→          to: `${applied.to}T23:59:59`,
+   361→          mpId: applied.mpId,
+   362→          lpuId: applied.lpuId,
+   363→          doctorId: applied.doctorId,
+   364→          assignedId: applied.assignedId,
+   365→          done: applied.done,
+   366→          variant: applied.variant,
+   367→        })}`
+   368→      );
+   369→    },
+   370→    enabled: Boolean(applied),
+   371→    staleTime: Infinity, // данные «заморожены» до следующего «Сформировать»
+   372→    refetchOnWindowFocus: false,
+   373→  });
+   374→  const data = reportQuery.data;
+   375→
+   376→  // Вариант сформированного отчета (для шапки таблицы и экспорта)
+   377→  const variant: ReportVariant = data?.variant ?? applied?.variant ?? "mp";
+   378→  const show = {
+   379→    nv: variant !== "doctor",
+   380→    lpu: variant !== "lpu",
+   381→    mp: variant === "doctor" || variant === "nomenclature",
+   382→  };
+   383→  const detailCols = buildDetailCols(variant);
+   384→  const detailSpan = 1 + detailCols.length;
+   385→
+   386→  const doneTotal = useMemo(
+   387→    () => (data?.tree ?? []).reduce((s, n) => s + n.done, 0),
+   388→    [data]
+   389→  );
+   390→
+   391→  // —— Плоские строки для экспорта ——
+   392→  const flatRows = useMemo<ExportRow[]>(() => {
+   393→    if (!data) return [];
+   394→    const out: ExportRow[] = [];
+   395→    data.tree.forEach((n) => collectRows(n, {}, out));
+   396→    return out;
+   397→  }, [data]);
+   398→  const canExport = Boolean(data && flatRows.length);
+   399→
+   400→  // —— Строка «Параметры: …» по примененным фильтрам ——
+   401→  const appliedParts = useMemo(() => {
+   402→    if (!applied) return [];
+   403→    const parts: string[] = [`Период: ${fmtDate(applied.from)} – ${fmtDate(applied.to)}`];
+   404→    if (applied.mpId)
+   405→      parts.push(`МП: ${(users ?? []).find((u) => u.id === applied.mpId)?.name ?? "—"}`);
+   406→    if (applied.lpuId)
+   407→      parts.push(`ЛПУ: ${(lpus ?? []).find((l) => l.id === applied.lpuId)?.name ?? "—"}`);
+   408→    if (applied.doctorId)
+   409→      parts.push(`НВ: ${(doctors ?? []).find((d) => d.id === applied.doctorId)?.fullName ?? "—"}`);
+   410→    if (applied.assignedId)
+   411→      parts.push(
+   412→        `Назначено: ${(nomenclature ?? []).find((n) => n.id === applied.assignedId)?.name ?? "—"}`
+   413→      );
+   414→    if (applied.done) parts.push(applied.done === "1" ? "Выполненные" : "Невыполненные");
+   415→    parts.push(`Вариант: ${VARIANT_LABELS[applied.variant]}`);
+   416→    return parts;
+   417→  }, [applied, users, lpus, doctors, nomenclature]);
+   418→
+   419→  // Настройки отличаются от примененных → подсказка про «Сформировать»
+   420→  const dirty = useMemo(() => {
+   421→    if (!applied) return false;
+   422→    return (
+   423→      applied.from !== draft.from ||
+   424→      applied.to !== draft.to ||
+   425→      applied.mpId !== draft.mpId ||
+   426→      applied.lpuId !== draft.lpuId ||
+   427→      applied.doctorId !== draft.doctorId ||
+   428→      applied.assignedId !== draft.assignedId ||
+   429→      applied.done !== draft.done ||
+   430→      applied.variant !== draft.variant
+   431→    );
+   432→  }, [applied, draft]);
+   433→
+   434→  function patchDraft(patch: Partial<ReportFilters>) {
+   435→    setDraft((prev) => ({ ...prev, ...patch }));
+   436→  }
+   437→
+   438→  /** «Сформировать» — единственный способ (пере)построить отчет */
+   439→  function formReport() {
+   440→    const next: ReportFilters = { ...draft };
+   441→    setApplied(next);
+   442→    setRunId((r) => r + 1);
+   443→    setTreeState({ open: new Set(), closed: new Set() }); // сброс дерева: раскрыт 1-й уровень
+   444→    setSettingsOpen(false);
+   445→  }
+   446→
+   447→  // —— Управление деревом (контролируемое, ключ уникален по пути) ——
+   448→  function toggleNode(key: string, depth: number) {
+   449→    setTreeState((prev) => {
+   450→      const open = new Set(prev.open);
+   451→      const closed = new Set(prev.closed);
+   452→      const isOpen = !closed.has(key) && (depth === 0 || open.has(key));
+   453→      if (isOpen) {
+   454→        open.delete(key);
+   455→        closed.add(key);
+   456→      } else {
+   457→        open.add(key);
+   458→        closed.delete(key);
+   459→      }
+   460→      return { open, closed };
+   461→    });
+   462→  }
+   463→
+   464→  // —— Аудит экспорта (ТЗ п.8) — фиксация до формирования файла ——
+   465→  async function logExport(kind: "Excel" | "PDF") {
+   466→    try {
+   467→      await api.post("/api/app/audit", {
+   468→        action: "EXPORT",
+   469→        entity: "report",
+   470→        details: `Экспорт отчета «По обследованиям» (${VARIANT_LABELS[variant]}): ${flatRows.length} строк, период ${applied?.from ?? ""}–${applied?.to ?? ""}, формат ${kind}`,
+   471→      });
+   472→    } catch {
+   473→      // журнал аудита не блокирует выгрузку
+   474→    }
+   475→  }
+   476→
+   477→  async function doExport(kind: "Excel" | "PDF") {
+   478→    if (!flatRows.length) {
+   479→      toast.error("Нет данных для экспорта");
+   480→      return;
+   481→    }
+   482→    await logExport(kind);
+   483→    const cols = EXPORT_COLS[variant];
+   484→
+   485→    if (kind === "Excel") {
+   486→      const ws = XLSX.utils.json_to_sheet(
+   487→        flatRows.map((r) => Object.fromEntries(cols.map((c) => [c.title, r[c.key]])))
+   488→      );
+   489→      ws["!cols"] = cols.map((c) => ({ wch: EXPORT_WIDTHS[c.key] ?? 16 }));
+   490→      const wb = XLSX.utils.book_new();
+   491→      XLSX.utils.book_append_sheet(wb, ws, "Отчет");
+   492→      XLSX.writeFile(wb, "otchet-po-obsledovaniyam.xlsx");
+   493→    } else {
+   494→      const doc = new jsPDF({ orientation: "landscape" });
+   495→      autoTable(doc, {
+   496→        head: [cols.map((c) => translit(c.title))],
+   497→        body: flatRows.map((r) =>
+   498→          cols.map((c) => (c.key === "date" ? r[c.key] : translit(r[c.key])))
+   499→        ),
+   500→        styles: { fontSize: 7.5, cellPadding: 2.5 },
+   501→        headStyles: { fillColor: [25, 70, 136], textColor: 255 },
+   502→        alternateRowStyles: { fillColor: [227, 234, 248] },
+   503→      });
+   504→      doc.save("otchet-po-obsledovaniyam.pdf");
+   505→    }
+   506→    toast.success(`Экспорт ${kind} выполнен: ${flatRows.length} строк`);
+   507→  }
+   508→
+   509→  // —— Мутации пресетов ——
+   510→  const savePreset = useMutation({
+   511→    mutationFn: () =>
+   512→      api.post("/api/app/presets", {
+   513→        name: presetName.trim(),
+   514→        reportKey: "examinations",
+   515→        filters: {
+   516→          from: draft.from,
+   517→          to: draft.to,
+   518→          mpId: draft.mpId,
+   519→          lpuId: draft.lpuId,
+   520→          doctorId: draft.doctorId,
+   521→          assignedId: draft.assignedId,
+   522→          done: draft.done,
+   523→          variant: draft.variant,
+   524→        },
+   525→      }),
+   526→    onSuccess: () => {
+   527→      toast.success("Пресет сохранен");
+   528→      setPresetName("");
+   529→      setSaveOpen(false);
+   530→      qc.invalidateQueries({ queryKey: ["presets"] });
+   531→    },
+   532→    onError: (e: Error) => toast.error(e.message),
+   533→  });
+   534→
+   535→  const removePreset = useMutation({
+   536→    mutationFn: (id: string) => api.del(`/api/app/presets/${id}`),
+   537→    onSuccess: () => {
+   538→      toast.success("Пресет удален");
+   539→      qc.invalidateQueries({ queryKey: ["presets"] });
+   540→    },
+   541→    onError: (e: Error) => toast.error(e.message),
+   542→  });
+   543→
+   544→  /** Применение пресета: подставляет настройки и сразу формирует отчет */
+   545→  function applyPreset(p: ReportPreset) {
+   546→    try {
+   547→      const f = JSON.parse(p.filtersJson) as Partial<ReportFilters>;
+   548→      const def = defaultFilters();
+   549→      const next: ReportFilters = {
+   550→        from: f.from || def.from,
+   551→        to: f.to || def.to,
+   552→        mpId: f.mpId ?? "",
+   553→        lpuId: f.lpuId ?? "",
+   554→        doctorId: f.doctorId ?? "",
+   555→        assignedId: f.assignedId ?? "",
+   556→        done: f.done ?? "",
+   557→        variant:
+   558→          f.variant && f.variant in VARIANT_LABELS ? (f.variant as ReportVariant) : "mp",
+   559→      };
+   560→      setDraft(next);
+   561→      setApplied(next);
+   562→      setRunId((r) => r + 1);
+   563→      setTreeState({ open: new Set(), closed: new Set() });
+   564→      setPresetsOpen(false);
+   565→      toast.success(`Пресет «${p.name}» применен — отчет сформирован`);
+   566→    } catch {
+   567→      toast.error("Не удалось применить пресет");
+   568→    }
+   569→  }
+   570→
+   571→  return (
+   572→    <div className="space-y-4">
+   573→      <div className="onec-window">
+   574→        {/* —— Заголовок формы (1С) —— */}
+   575→        <div className="onec-titlebar">
+   576→          <BarChart3 className="h-4 w-4 text-[#8a8a8a]" strokeWidth={2} />
+   577→          <h2 className="text-[13px] font-semibold text-[#1c1c1c]">
+   578→            Отчет по обследованиям
+   579→          </h2>
+   580→          <span className="ml-auto hidden text-[11px] text-[#9a9a9a] sm:inline">
+   581→            Форма отчета · дерево групп · детализация заявок
+   582→          </span>
+   583→        </div>
+   584→
+   585→        {/* —— Панель инструментов (1С) —— */}
+   586→        <div className="onec-toolbar" role="toolbar" aria-label="Панель инструментов отчета">
+   587→          <button
+   588→            type="button"
+   589→            className="onec-btn onec-btn-primary"
+   590→            onClick={formReport}
+   591→            disabled={reportQuery.isFetching}
+   592→          >
+   593→            {reportQuery.isFetching ? (
+   594→              <Loader2 className="h-3.5 w-3.5 animate-spin" strokeWidth={2.5} />
+   595→            ) : (
+   596→              <Play className="h-3.5 w-3.5" strokeWidth={2.5} />
+   597→            )}
+   598→            Сформировать
+   599→          </button>
+   600→          <button type="button" className="onec-btn" onClick={() => setSettingsOpen(true)}>
+   601→            <SlidersHorizontal className="h-3.5 w-3.5" strokeWidth={2} />
+   602→            Настройки…
+   603→          </button>
+   604→
+   605→          <span className="mx-1.5 h-4 w-px bg-[#d9d9d9]" aria-hidden />
+   606→
+   607→          <label className="flex items-center gap-1.5 text-[11.5px] text-[#5a5a5a]">
+   608→            Вариант:
+   609→            <select
+   610→              className="onec-search w-[160px] cursor-pointer"
+   611→              value={draft.variant}
+   612→              onChange={(e) => patchDraft({ variant: e.target.value as ReportVariant })}
+   613→              aria-label="Вариант отчета"
+   614→            >
+   615→              <option value="mp">По МП</option>
+   616→              <option value="lpu">По ЛПУ</option>
+   617→              <option value="doctor">По НВ</option>
+   618→              <option value="nomenclature">По Номенклатуре</option>
+   619→            </select>
+   620→          </label>
+   621→
+   622→          <span className="mx-1.5 h-4 w-px bg-[#d9d9d9]" aria-hidden />
+   623→
+   624→          <button
+   625→            type="button"
+   626→            className="onec-btn"
+   627→            onClick={() => doExport("Excel")}
+   628→            disabled={!canExport}
+   629→          >
+   630→            <FileSpreadsheet className="h-3.5 w-3.5" strokeWidth={2} />
+   631→            Экспорт Excel
+   632→          </button>
+   633→          <button
+   634→            type="button"
+   635→            className="onec-btn"
+   636→            onClick={() => doExport("PDF")}
+   637→            disabled={!canExport}
+   638→          >
+   639→            <FileDown className="h-3.5 w-3.5" strokeWidth={2} />
+   640→            Экспорт PDF
+   641→          </button>
+   642→
+   643→          <span className="mx-1.5 h-4 w-px bg-[#d9d9d9]" aria-hidden />
+   644→
+   645→          <Popover open={presetsOpen} onOpenChange={setPresetsOpen}>
+   646→            <PopoverTrigger asChild>
+   647→              <button type="button" className="onec-btn">
+   648→                <Bookmark className="h-3.5 w-3.5" strokeWidth={2} />
+   649→                Пресеты…{presets?.length ? ` (${presets.length})` : ""}
+   650→              </button>
+   651→            </PopoverTrigger>
+   652→            <PopoverContent align="start" className="w-72 p-2">
+   653→              {!presets?.length ? (
+   654→                <p className="p-2 text-xs text-muted-foreground">
+   655→                  Пресетов пока нет — настройте параметры и нажмите «Сохранить как…».
+   656→                </p>
+   657→              ) : (
+   658→                <div className="max-h-60 space-y-1 overflow-y-auto">
+   659→                  {presets.map((p) => (
+   660→                    <div
+   661→                      key={p.id}
+   662→                      className="flex items-center gap-1 rounded-lg px-2 py-1.5 transition-colors hover:bg-sky-light/60"
+   663→                    >
+   664→                      <button
+   665→                        type="button"
+   666→                        onClick={() => applyPreset(p)}
+   667→                        className="min-w-0 flex-1 text-left"
+   668→                      >
+   669→                        <span className="block truncate text-sm font-medium text-brand">
+   670→                          {p.name}
+   671→                        </span>
+   672→                        <span className="block text-[11px] text-muted-foreground">
+   673→                          Сохранен {fmtDate(p.createdAt)}
+   674→                        </span>
+   675→                      </button>
+   676→                      <DeleteButton
+   677→                        title={`Удалить пресет «${p.name}»?`}
+   678→                        onConfirm={async () => {
+   679→                          await removePreset.mutateAsync(p.id);
+   680→                        }}
+   681→                      />
+   682→                    </div>
+   683→                  ))}
+   684→                </div>
+   685→              )}
+   686→            </PopoverContent>
+   687→          </Popover>
+   688→          <button type="button" className="onec-btn" onClick={() => setSaveOpen(true)}>
+   689→            <Save className="h-3.5 w-3.5" strokeWidth={2} />
+   690→            Сохранить как…
+   691→          </button>
+   692→        </div>
+   693→
+   694→        {/* —— Строка параметров (как в 1С) —— */}
+   695→        <div className="flex flex-wrap items-center gap-x-1.5 gap-y-1 border-b border-[#e4e4e4] bg-white px-3 py-2 text-[12px] text-[#3a3a3a]">
+   696→          <span className="font-semibold text-[#1c1c1c]">Параметры:</span>
+   697→          {applied ? (
+   698→            <>
+   699→              {appliedParts.map((part, i) => (
+   700→                <span key={`${i}-${part}`} className="whitespace-nowrap">
+   701→                  {i > 0 && <span className="mr-1.5 text-[#c9c9c9]">·</span>}
+   702→                  {part}
+   703→                </span>
+   704→              ))}
+   705→              {data && (
+   706→                <span className="whitespace-nowrap">
+   707→                  <span className="mr-1.5 text-[#c9c9c9]">·</span>
+   708→                  Сформирован: {fmtDateTime(data.generatedAt)}
+   709→                </span>
+   710→              )}
+   711→              {dirty && (
+   712→                <span className="whitespace-nowrap text-terra-dark">
+   713→                  · настройки изменены — нажмите «Сформировать»
+   714→                </span>
+   715→              )}
+   716→            </>
+   717→          ) : (
+   718→            <span className="text-[#9a9a9a]">
+   719→              отчет не сформирован — задайте настройки и нажмите «Сформировать»
+   720→            </span>
+   721→          )}
+   722→          {reportQuery.isFetching && (
+   723→            <Loader2 className="h-3.5 w-3.5 animate-spin text-azure" aria-label="Формирование отчета" />
+   724→          )}
+   725→        </div>
+   726→
+   727→        {/* —— Табличное поле отчета —— */}
+   728→        <div className="bg-white">
+   729→          {reportQuery.error ? (
+   730→            <div className="m-3 rounded-md border border-terra/50 bg-terra-light p-4 text-sm text-brand-dark">
+   731→              Не удалось построить отчет: {(reportQuery.error as Error).message}
+   732→            </div>
+   733→          ) : reportQuery.isPending || !data ? (
+   734→            applied ? (
+   735→              <div className="p-3">
+   736→                <RowsSkeleton rows={8} />
+   737→              </div>
+   738→            ) : (
+   739→              <EmptyState
+   740→                title="Отчет не сформирован"
+   741→                hint="Задайте период и фильтры в «Настройках», затем нажмите желтую кнопку «Сформировать» — как в 1С, отчет строится только по команде."
+   742→                className="py-14"
+   743→              />
+   744→            )
+   745→          ) : data.tree.length === 0 ? (
+   746→            <EmptyState
+   747→              title="Нет заявок за выбранный период"
+   748→              hint="Измените настройки или расширьте период и нажмите «Сформировать»"
+   749→              className="py-14"
+   750→            />
+   751→          ) : (
+   752→            <div className="max-h-[560px] overflow-auto">
+   753→              <table className="onec-table">
+   754→                <caption className="sr-only">
+   755→                  Отчет по обследованиям — иерархическая таблица с деревом групп
+   756→                </caption>
+   757→                <thead>
+   758→                  <tr>
+   759→                    <th className="min-w-[280px]">
+   760→                      Наименование · группировка: {GROUP_BY_LABELS[variant]}
+   761→                    </th>
+   762→                    {detailCols.map((c) => (
+   763→                      <th key={c.key} className={c.key === "date" ? "whitespace-nowrap" : undefined}>
+   764→                        {c.label}
+   765→                      </th>
+   766→                    ))}
+   767→                    <th style={{ textAlign: "right" }}>Всего</th>
+   768→                    <th style={{ textAlign: "right" }}>Выполнено</th>
+   769→                    <th style={{ textAlign: "right" }}>%</th>
+   770→                  </tr>
+   771→                </thead>
+   772→                <tbody>
+   773→                  {data.tree.map((node) => (
+   774→                    <TreeRows
+   775→                      key={node.id}
+   776→                      node={node}
+   777→                      depth={0}
+   778→                      parentKey="r"
+   779→                      detailSpan={detailSpan}
+   780→                      show={show}
+   781→                      expansion={treeState}
+   782→                      onToggle={toggleNode}
+   783→                    />
+   784→                  ))}
+   785→                  {/* —— Итого по отчету —— */}
+   786→                  <tr className="onec-row-total">
+   787→                    <td colSpan={detailSpan}>Итого по отчету</td>
+   788→                    <td style={{ textAlign: "right" }}>{data.total}</td>
+   789→                    <td style={{ textAlign: "right" }}>{doneTotal}</td>
+   790→                    <td style={{ textAlign: "right" }}>
+   791→                      {pct(doneTotal, data.total)}%
+   792→                    </td>
+   793→                  </tr>
+   794→                </tbody>
+   795→              </table>
+   796→            </div>
+   797→          )}
+   798→        </div>
+   799→      </div>
+   800→
+   801→      {/* —— Диалог «Настройки отчета» —— */}
+   802→      <Dialog open={settingsOpen} onOpenChange={setSettingsOpen}>
+   803→        <DialogContent className="sm:max-w-2xl">
+   804→          <DialogHeader>
+   805→            <DialogTitle className="font-display text-brand">
+   806→              Настройки отчета «По обследованиям»
+   807→            </DialogTitle>
+   808→            <DialogDescription>
+   809→              Задайте параметры отбора. Отчет строится по кнопке «Сформировать».
+   810→            </DialogDescription>
+   811→          </DialogHeader>
+   812→
+   813→          <div className="grid grid-cols-1 gap-4 py-1 sm:grid-cols-2">
+   814→            <div className="space-y-1.5">
+   815→              <Label className="text-xs text-muted-foreground">Период с</Label>
+   816→              <Input
+   817→                type="date"
+   818→                value={draft.from}
+   819→                onChange={(e) => patchDraft({ from: e.target.value })}
+   820→              />
+   821→            </div>
+   822→            <div className="space-y-1.5">
+   823→              <Label className="text-xs text-muted-foreground">Период по</Label>
+   824→              <Input
+   825→                type="date"
+   826→                value={draft.to}
+   827→                onChange={(e) => patchDraft({ to: e.target.value })}
+   828→              />
+   829→            </div>
+   830→            <div className="space-y-1.5">
+   831→              <Label className="text-xs text-muted-foreground">Медицинский представитель</Label>
+   832→              <Select
+   833→                value={draft.mpId || "ALL"}
+   834→                onValueChange={(v) => patchDraft({ mpId: v === "ALL" ? "" : v, doctorId: "" })}
+   835→              >
+   836→                <SelectTrigger>
+   837→                  <SelectValue placeholder="Все МП" />
+   838→                </SelectTrigger>
+   839→                <SelectContent>
+   840→                  <SelectItem value="ALL">Все МП</SelectItem>
+   841→                  {mps.map((u) => (
+   842→                    <SelectItem key={u.id} value={u.id}>
+   843→                      {u.name}
+   844→                    </SelectItem>
+   845→                  ))}
+   846→                </SelectContent>
+   847→              </Select>
+   848→            </div>
+   849→            <div className="space-y-1.5">
+   850→              <Label className="text-xs text-muted-foreground">ЛПУ</Label>
+   851→              <Select
+   852→                value={draft.lpuId || "ALL"}
+   853→                onValueChange={(v) => patchDraft({ lpuId: v === "ALL" ? "" : v })}
+   854→              >
+   855→                <SelectTrigger>
+   856→                  <SelectValue placeholder="Все ЛПУ" />
+   857→                </SelectTrigger>
+   858→                <SelectContent className="max-h-60">
+   859→                  <SelectItem value="ALL">Все ЛПУ</SelectItem>
+   860→                  {(lpus ?? []).map((l) => (
+   861→                    <SelectItem key={l.id} value={l.id}>
+   862→                      {l.name}
+   863→                    </SelectItem>
+   864→                  ))}
+   865→                </SelectContent>
+   866→              </Select>
+   867→            </div>
+   868→            <div className="space-y-1.5">
+   869→              <Label className="text-xs text-muted-foreground">Направляющий врач (НВ)</Label>
+   870→              <Select
+   871→                value={draft.doctorId || "ALL"}
+   872→                onValueChange={(v) => patchDraft({ doctorId: v === "ALL" ? "" : v })}
+   873→              >
+   874→                <SelectTrigger>
+   875→                  <SelectValue placeholder={draft.mpId ? "Все НВ выбранного МП" : "Все НВ"} />
+   876→                </SelectTrigger>
+   877→                <SelectContent className="max-h-60">
+   878→                  <SelectItem value="ALL">
+   879→                    {draft.mpId ? "Все НВ выбранного МП" : "Все НВ"}
+   880→                  </SelectItem>
+   881→                  {doctorOptions.map((d) => (
+   882→                    <SelectItem key={d.id} value={d.id}>
+   883→                      {d.fullName}
+   884→                    </SelectItem>
+   885→                  ))}
+   886→                </SelectContent>
+   887→              </Select>
+   888→            </div>
+   889→            <div className="space-y-1.5">
+   890→              <Label className="text-xs text-muted-foreground">Что назначено</Label>
+   891→              <Select
+   892→                value={draft.assignedId || "ALL"}
+   893→                onValueChange={(v) => patchDraft({ assignedId: v === "ALL" ? "" : v })}
+   894→              >
+   895→                <SelectTrigger>
+   896→                  <SelectValue placeholder="Любое назначение" />
+   897→                </SelectTrigger>
+   898→                <SelectContent className="max-h-60">
+   899→                  <SelectItem value="ALL">Любое назначение</SelectItem>
+   900→                  {(nomenclature ?? []).map((n) => (
+   901→                    <SelectItem key={n.id} value={n.id}>
+   902→                      {n.name}
+   903→                    </SelectItem>
+   904→                  ))}
+   905→                </SelectContent>
+   906→              </Select>
+   907→            </div>
+   908→            <div className="space-y-1.5">
+   909→              <Label className="text-xs text-muted-foreground">Выполненность</Label>
+   910→              <Select
+   911→                value={draft.done || "ALL"}
+   912→                onValueChange={(v) => patchDraft({ done: v === "ALL" ? "" : v })}
+   913→              >
+   914→                <SelectTrigger>
+   915→                  <SelectValue placeholder="Все" />
+   916→                </SelectTrigger>
+   917→                <SelectContent>
+   918→                  <SelectItem value="ALL">Все</SelectItem>
+   919→                  <SelectItem value="1">Только выполненные</SelectItem>
+   920→                  <SelectItem value="0">Только невыполненные</SelectItem>
+   921→                </SelectContent>
+   922→              </Select>
+   923→            </div>
+   924→
+   925→            {/* Задел этапа 2: колонка «Начисленный бонус» */}
+   926→            <div
+   927→              className="flex items-center gap-2.5 self-end rounded-lg border border-dashed border-sky/50 bg-soft px-3 py-2.5 sm:col-span-2"
+   928→              title="Функционал этапа 2 — бонусная система"
+   929→            >
+   930→              <Coins className="h-4 w-4 text-sky/70" strokeWidth={2} />
+   931→              <div className="min-w-0 flex-1">
+   932→                <p className="text-xs font-medium leading-tight text-brand">
+   933→                  Колонка «Начисленный бонус»
+   934→                </p>
+   935→                <p className="text-[10px] leading-tight text-muted-foreground">
+   936→                  Этап 2 · бонусная система
+   937→                </p>
+   938→              </div>
+   939→              <Switch
+   940→                checked={false}
+   941→                disabled
+   942→                aria-readonly
+   943→                aria-label="Колонка «Начисленный бонус» — этап 2"
+   944→              />
+   945→            </div>
+   946→          </div>
+   947→
+   948→          <DialogFooter className="gap-2">
+   949→            <Button variant="outline" onClick={() => setSettingsOpen(false)}>
+   950→              Закрыть
+   951→            </Button>
+   952→            <button type="button" className="onec-btn onec-btn-primary" onClick={formReport}>
+   953→              <Play className="h-3.5 w-3.5" strokeWidth={2.5} />
+   954→              Сформировать
+   955→            </button>
+   956→          </DialogFooter>
+   957→        </DialogContent>
+   958→      </Dialog>
+   959→
+   960→      {/* —— Диалог сохранения пресета —— */}
+   961→      <Dialog open={saveOpen} onOpenChange={setSaveOpen}>
+   962→        <DialogContent className="sm:max-w-sm">
+   963→          <DialogHeader>
+   964→            <DialogTitle className="font-display text-brand">
+   965→              Сохранить пресет настроек
+   966→            </DialogTitle>
+   967→            <DialogDescription>
+   968→              Пресет доступен только вам в списке «Пресеты…».
+   969→            </DialogDescription>
+   970→          </DialogHeader>
+   971→          <div className="space-y-1.5 py-2">
+   972→            <Label>Название пресета</Label>
+   973→            <Input
+   974→              value={presetName}
+   975→              onChange={(e) => setPresetName(e.target.value)}
+   976→              placeholder="Например: Квартал · МРТ головы"
+   977→              onKeyDown={(e) => {
+   978→                if (e.key === "Enter" && presetName.trim()) savePreset.mutate();
+   979→              }}
+   980→            />
+   981→            <p className="text-[11px] text-muted-foreground">
+   982→              Сохраняются: период, вариант отчета, МП, ЛПУ, НВ, назначение, выполненность.
+   983→            </p>
+   984→          </div>
+   985→          <DialogFooter>
+   986→            <Button variant="outline" onClick={() => setSaveOpen(false)}>
+   987→              Отмена
+   988→            </Button>
+   989→            <Button
+   990→              onClick={() => savePreset.mutate()}
+   991→              disabled={!presetName.trim() || savePreset.isPending}
+   992→            >
+   993→              Сохранить
+   994→            </Button>
+   995→          </DialogFooter>
+   996→        </DialogContent>
+   997→      </Dialog>
+   998→    </div>
+   999→  );
+  1000→}
+  1001→
+  1002→/* ============================================================
+  1003→   Рекурсивная строка-группа дерева отчета (.onec-row-group)
+  1004→   ============================================================ */
+  1005→
+  1006→function TreeRows({
+  1007→  node,
+  1008→  depth,
+  1009→  parentKey,
+  1010→  detailSpan,
+  1011→  show,
+  1012→  expansion,
+  1013→  onToggle,
+  1014→}: {
+  1015→  node: ReportGroupNode;
+  1016→  depth: number;
+  1017→  parentKey: string;
+  1018→  detailSpan: number;
+  1019→  show: { nv: boolean; lpu: boolean; mp: boolean };
+  1020→  expansion: TreeExpansion;
+  1021→  onToggle: (key: string, depth: number) => void;
+  1022→}) {
+  1023→  // Уникальный ключ по пути в дереве: level:id на каждом уровне
+  1024→  const key = `${parentKey}/${depth}:${node.level}:${node.id}`;
+  1025→  const open = !expansion.closed.has(key) && (depth === 0 || expansion.open.has(key));
+  1026→  const hasChildren = node.children.length > 0;
+  1027→  const hasContent = hasChildren || node.requests.length > 0;
+  1028→  const Icon = LEVEL_ICONS[node.level] ?? Building2;
+  1029→  const p = pct(node.done, node.total);
+  1030→
+  1031→  return (
+  1032→    <>
+  1033→      <tr className="onec-row-group">
+  1034→        <td colSpan={detailSpan}>
+  1035→          <div className="flex items-center gap-1.5" style={{ paddingLeft: depth * 20 }}>
+  1036→            {hasContent ? (
+  1037→              <button
+  1038→                type="button"
+  1039→                className="onec-tree-toggle"
+  1040→                aria-expanded={open}
+  1041→                aria-label={open ? `Свернуть группу «${node.name}»` : `Развернуть группу «${node.name}»`}
+  1042→                onClick={() => onToggle(key, depth)}
+  1043→              >
+  1044→                {open ? "−" : "+"}
+  1045→              </button>
+  1046→            ) : (
+  1047→              <span className="inline-block h-[15px] w-[15px] shrink-0" aria-hidden />
+  1048→            )}
+  1049→            <Icon className="h-3.5 w-3.5 shrink-0 text-brand" strokeWidth={2} />
+  1050→            <span className="text-[13px] text-[#1c1c1c]">{node.name}</span>
+  1051→            {node.subtitle && (
+  1052→              <span className="font-normal text-[11px] text-[#8a8a8a]">· {node.subtitle}</span>
+  1053→            )}
+  1054→          </div>
+  1055→        </td>
+  1056→        <td style={{ textAlign: "right" }}>{node.total}</td>
+  1057→        <td style={{ textAlign: "right" }}>{node.done}</td>
+  1058→        <td style={{ textAlign: "right" }}>
+  1059→          <span
+  1060→            className={cn(
+  1061→              "inline-block rounded-full px-1.5 py-[1px] text-[10px] font-semibold",
+  1062→              pctBadgeClass(p)
+  1063→            )}
+  1064→          >
+  1065→            {p}%
+  1066→          </span>
+  1067→        </td>
+  1068→      </tr>
+  1069→
+  1070→      {/* Дочерние группы */}
+  1071→      {open &&
+  1072→        hasChildren &&
+  1073→        node.children.map((child) => (
+  1074→          <TreeRows
+  1075→            key={child.id}
+  1076→            node={child}
+  1077→            depth={depth + 1}
+  1078→            parentKey={key}
+  1079→            detailSpan={detailSpan}
+  1080→            show={show}
+  1081→            expansion={expansion}
+  1082→            onToggle={onToggle}
+  1083→          />
+  1084→        ))}
+  1085→
+  1086→      {/* Листья: детальные строки заявок */}
+  1087→      {open &&
+  1088→        !hasChildren &&
+  1089→        (node.requests.length ? (
+  1090→          node.requests.map((r) => <DetailRow key={r.id} r={r} show={show} />)
+  1091→        ) : (
+  1092→          <tr>
+  1093→            <td colSpan={detailSpan + 3} className="italic text-[#9a9a9a]" style={{ fontSize: 12 }}>
+  1094→              Нет записей в группе
+  1095→            </td>
+  1096→          </tr>
+  1097→        ))}
+  1098→    </>
+  1099→  );
+  1100→}
+  1101→
+  1102→/* ============ Детальная строка заявки (колонки по варианту) ============ */
+  1103→
+  1104→function DetailRow({
+  1105→  r,
+  1106→  show,
+  1107→}: {
+  1108→  r: ReportRequestRow;
+  1109→  show: { nv: boolean; lpu: boolean; mp: boolean };
+  1110→}) {
+  1111→  return (
+  1112→    <tr>
+  1113→      <td className="whitespace-nowrap">{fmtDate(r.date)}</td>
+  1114→      <td style={{ fontWeight: 500 }}>{r.patientName}</td>
+  1115→      {show.nv && <td>{r.doctorName}</td>}
+  1116→      {show.lpu && <td>{r.lpuName}</td>}
+  1117→      {show.mp && <td>{r.mpName}</td>}
+  1118→      <td>{r.destination ?? "—"}</td>
+  1119→      <td>{r.assigned ?? "—"}</td>
+  1120→      <td>
+  1121→        {r.done ? (
+  1122→          <span className="inline-flex items-center gap-1 text-azure-dark">
+  1123→            <CheckCircle2 className="h-3.5 w-3.5" strokeWidth={2} />
+  1124→            {r.done}
+  1125→          </span>
+  1126→        ) : (
+  1127→          <span className="inline-flex items-center rounded-full bg-terra-light px-2 py-0.5 text-[10px] font-semibold text-terra-dark">
+  1128→            Ожидает
+  1129→          </span>
+  1130→        )}
+  1131→      </td>
+  1132→      {/* Пустые ячейки под колонки «Всего / Выполнено / %» */}
+  1133→      <td />
+  1134→      <td />
+  1135→      <td />
+  1136→    </tr>
+  1137→  );
+  1138→}
+  1139→

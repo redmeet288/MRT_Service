@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { db } from "@/lib/db";
 import { audit, badRequest, parseDate, requireAuth } from "@/lib/api-helpers";
+import { DEFAULT_DESTINATION, idList } from "@/lib/request-items";
 
 // GET /api/app/requests?from=&to=&mpId=&lpuId=&doctorId=&done=&assignedId=
 export async function GET(req: NextRequest) {
@@ -13,7 +14,7 @@ export async function GET(req: NextRequest) {
   const lpuId = sp.get("lpuId");
   const doctorId = sp.get("doctorId");
   const assignedId = sp.get("assignedId");
-  const done = sp.get("done"); // "1" — только выполненные, "0" — только невыполненные
+  const done = sp.get("done"); // "1" — с позицией «Что сделано», "0" — без
   const requests = await db.request.findMany({
     where: {
       ...(from || to
@@ -22,23 +23,36 @@ export async function GET(req: NextRequest) {
       ...(mpId ? { doctor: { mpId } } : {}),
       ...(lpuId ? { lpuId } : {}),
       ...(doctorId ? { doctorId } : {}),
-      ...(assignedId ? { assignedId } : {}),
-      ...(done === "1" ? { doneId: { not: null } } : {}),
-      ...(done === "0" ? { doneId: null } : {}),
+      ...(assignedId
+        ? {
+            OR: [
+              { items: { some: { nomenclatureId: assignedId, kind: "ASSIGNED" } } },
+              { assignedId },
+            ],
+          }
+        : {}),
+      ...(done === "1" ? { items: { some: { kind: "DONE" } } } : {}),
+      ...(done === "0" ? { items: { none: { kind: "DONE" } } } : {}),
     },
     orderBy: { date: "desc" },
     include: {
       doctor: { select: { id: true, fullName: true, mp: { select: { id: true, name: true } } } },
       lpu: { include: { city: true } },
-      assigned: true,
-      done: true,
+      items: { include: { nomenclature: true } },
       author: { select: { id: true, name: true } },
     },
     // Защита от несанкционированного выкачивания больших объемов:
     // базовый лимит выгрузки за один запрос
     take: 5000,
   });
-  return NextResponse.json(requests);
+  return NextResponse.json(
+    requests.map((r) => ({
+      ...r,
+      assignedItems: r.items.filter((i) => i.kind === "ASSIGNED").map((i) => i.nomenclature),
+      doneItems: r.items.filter((i) => i.kind === "DONE").map((i) => i.nomenclature),
+      items: undefined,
+    }))
+  );
 }
 
 // POST /api/app/requests — регистрация направления
@@ -55,18 +69,30 @@ export async function POST(req: NextRequest) {
   if (!lpuId) return badRequest("Укажите ЛПУ");
   const doctor = await db.doctor.findUnique({ where: { id: doctorId } });
   if (!doctor) return badRequest("Врач (НВ) не найден");
-  const assignedId = body?.assignedId ? String(body.assignedId) : null;
-  const doneId = body?.doneId ? String(body.doneId) : null;
+  // «Куда направление»: незаполненное поле автоматически заменяется на «МРТ ТОЧНО»
+  const destination =
+    body?.destination && String(body.destination).trim()
+      ? String(body.destination).trim()
+      : DEFAULT_DESTINATION;
+  const assignedIds = idList(body?.assignedIds ?? body?.assignedId);
+  const doneIds = idList(body?.doneIds ?? body?.doneId);
   const request = await db.request.create({
     data: {
       date,
       patientName,
       doctorId,
       lpuId,
-      destination: body?.destination ? String(body.destination) : null,
-      assignedId,
-      doneId,
+      destination,
+      assignedId: assignedIds[0] ?? null,
+      doneId: doneIds[0] ?? null,
+      comment: body?.comment ? String(body.comment) : null,
       authorId: session.uid,
+      items: {
+        create: [
+          ...assignedIds.map((nomenclatureId) => ({ nomenclatureId, kind: "ASSIGNED" })),
+          ...doneIds.map((nomenclatureId) => ({ nomenclatureId, kind: "DONE" })),
+        ],
+      },
     },
   });
   await audit(

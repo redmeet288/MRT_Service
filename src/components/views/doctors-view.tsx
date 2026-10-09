@@ -11,6 +11,8 @@ import type {
   CooperationStatus,
   DoctorCard,
   DoctorItem,
+  Role,
+  SpecializationItem,
   UserBasic,
   VisitItem,
 } from "@/lib/types";
@@ -18,8 +20,13 @@ import {
   SectionCard,
   EmptyState,
   DeleteButton,
+  RowsSkeleton,
   StatusChip,
   fmtDate,
+  SortableTh,
+  applySort,
+  cycleSort,
+  type SortState,
 } from "@/components/shared/ui-bits";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -27,7 +34,6 @@ import { Label } from "@/components/ui/label";
 import { Textarea } from "@/components/ui/textarea";
 import { Checkbox } from "@/components/ui/checkbox";
 import { Badge } from "@/components/ui/badge";
-import { Card, CardContent } from "@/components/ui/card";
 import { Skeleton } from "@/components/ui/skeleton";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import {
@@ -73,9 +79,26 @@ import {
   XCircle,
 } from "lucide-react";
 import { useUiStore } from "@/store/ui";
+import { DictImportExport } from "@/components/shared/dict-io";
+import { useDictColumns, type DictCol } from "@/components/shared/dict-columns";
+
+/** Пользователь сессии: JWT-колбэк кладет uid и role (типизация next-auth по умолчанию их не знает) */
+type SessionUserWithRole = { uid?: string; role?: Role } | undefined;
 
 const ALL = "__all__";
 const NONE = "__none__";
+
+/** Столбцы списка НВ — настраиваются кнопкой «Столбцы…» (видимость и порядок) */
+const DOCTOR_COLS: DictCol[] = [
+  { key: "fullName", label: "ФИО" },
+  { key: "status", label: "Статус" },
+  { key: "mp", label: "МП" },
+  { key: "lpu", label: "ЛПУ" },
+  { key: "city", label: "Город" },
+  { key: "phone", label: "Телефон" },
+  { key: "requests", label: "Заявки" },
+  { key: "visits", label: "Визиты" },
+];
 
 /** Сегодняшняя дата в формате YYYY-MM-DD (локальная зона) */
 function todayISO(): string {
@@ -86,7 +109,17 @@ function todayISO(): string {
 /** Редактируемый профиль НВ — общий для DoctorItem и DoctorCard */
 type EditableDoctor = Pick<
   DoctorItem,
-  "id" | "fullName" | "phone" | "birthDate" | "statusId" | "mpId" | "cityId" | "comment" | "lpus"
+  | "id"
+  | "fullName"
+  | "phone"
+  | "birthDate"
+  | "statusId"
+  | "mpId"
+  | "cityId"
+  | "comment"
+  | "lpus"
+  | "workSchedule"
+  | "specializations"
 >;
 
 interface DoctorFilters {
@@ -100,12 +133,22 @@ interface DoctorFilters {
 const emptyFilters: DoctorFilters = { q: "", mpId: "", statusId: "", lpuId: "", cityId: "" };
 
 /* ============================================================
-   Вьюха «Направляющие врачи»
+   Вьюха «Направляющие врачи» — список в стиле 1С
    ============================================================ */
 export function DoctorsView() {
+  const qc = useQueryClient();
+  const { data: session } = useSession();
+  // Роль из сессии: MP — полный доступ, OPERATOR — добавление и просмотр карточки
+  const isMP = (session?.user as SessionUserWithRole)?.role === "MP";
+
   const [filters, setFilters] = useState<DoctorFilters>(emptyFilters);
   const [formOpen, setFormOpen] = useState(false);
+  const [formDoctor, setFormDoctor] = useState<DoctorItem | null>(null);
   const [cardId, setCardId] = useState<string | null>(null);
+  // Сортировка списка НВ (клик по заголовку столбца 1С-таблицы)
+  const [sort, setSort] = useState<SortState | null>(null);
+  // Настраиваемые столбцы списка (видимость и порядок, доработка 1.3)
+  const { visibleCols, settingsButton, settingsDialog } = useDictColumns("doctors", DOCTOR_COLS);
 
   const { data: doctors, isLoading } = useQuery<DoctorItem[]>({
     queryKey: ["doctors", "list", filters.q, filters.mpId, filters.statusId, filters.lpuId, filters.cityId],
@@ -139,15 +182,71 @@ export function DoctorsView() {
 
   const mps = useMemo(() => (users ?? []).filter((u) => u.role === "MP"), [users]);
 
+  // Клиентская сортировка: ФИО / статус / МП / ЛПУ / город / телефон / заявки / визиты
+  const sortedDoctors = useMemo(
+    () =>
+      applySort(doctors ?? [], sort, (d, field) => {
+        switch (field) {
+          case "fullName":
+            return d.fullName;
+          case "status":
+            return d.status?.name ?? "";
+          case "mp":
+            return d.mp?.name ?? "";
+          case "lpu":
+            return d.lpus[0]?.lpu.name ?? "";
+          case "city":
+            return d.city?.name ?? "";
+          case "phone":
+            return d.phone ?? "";
+          case "requests":
+            return d._count.requests;
+          case "visits":
+            return d._count.visits;
+          default:
+            return "";
+        }
+      }),
+    [doctors, sort]
+  );
+
+  // Циклическая смена направления сортировки: нет → asc → desc → нет
+  const handleSort = (field: string) => setSort((s) => cycleSort(s, field));
+
+  // Удаление врача — только МП (кнопка в строке)
+  const removeDoctor = useMutation({
+    mutationFn: (id: string) => api.del(`/api/app/doctors/${id}`),
+    onSuccess: () => {
+      toast.success("Врач удален");
+      qc.invalidateQueries({ queryKey: ["doctors"] });
+      qc.invalidateQueries({ queryKey: ["doctor-card"] });
+      qc.invalidateQueries({ queryKey: ["dashboard"] });
+    },
+    onError: (e: Error) => toast.error(e.message),
+  });
+
   return (
     <div className="space-y-4">
       <SectionCard
         title="Направляющие врачи (НВ)"
         description="CRM-база врачей: привязки к ЛПУ, статус сотрудничества, визиты и заявки"
         action={
-          <Button onClick={() => setFormOpen(true)} className="gap-1.5 bg-azure hover:bg-azure-dark">
-            <Plus className="h-4 w-4" strokeWidth={2} /> Добавить врача
-          </Button>
+          <div className="flex flex-wrap items-center gap-2">
+            <DictImportExport
+              kind="doctors"
+              visibleKeys={visibleCols.map((c) => c.key)}
+            />
+            {settingsButton}
+            <Button
+              onClick={() => {
+                setFormDoctor(null);
+                setFormOpen(true);
+              }}
+              className="gap-1.5 bg-azure hover:bg-azure-dark"
+            >
+              <Plus className="h-4 w-4" strokeWidth={2} /> Добавить врача
+            </Button>
+          </div>
         }
       >
         <div className="space-y-5">
@@ -206,13 +305,9 @@ export function DoctorsView() {
             </Button>
           </div>
 
-          {/* Сетка карточек НВ */}
+          {/* Список НВ — таблица в стиле 1С */}
           {isLoading ? (
-            <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-3">
-              {Array.from({ length: 6 }).map((_, i) => (
-                <Skeleton key={i} className="h-44 rounded-xl" />
-              ))}
-            </div>
+            <RowsSkeleton rows={6} />
           ) : !doctors?.length ? (
             <EmptyState
               title="Врачи не найдены"
@@ -221,105 +316,177 @@ export function DoctorsView() {
           ) : (
             <>
               <p className="text-xs text-muted-foreground">Найдено: {doctors.length}</p>
-              <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-3">
-                {doctors.map((d) => (
-                  <DoctorGridCard key={d.id} doctor={d} onOpen={() => setCardId(d.id)} />
-                ))}
+              <div className="onec-window">
+                <div className="max-h-96 overflow-y-auto">
+                  <table className="onec-table">
+                    <thead>
+                      <tr>
+                        {visibleCols.map((col) => (
+                          <SortableTh
+                            key={col.key}
+                            label={col.label}
+                            field={col.key}
+                            sort={sort}
+                            onSort={handleSort}
+                            align={col.key === "requests" || col.key === "visits" ? "center" : "left"}
+                          />
+                        ))}
+                        <th>Действия</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {sortedDoctors.map((d) => (
+                        <tr key={d.id}>
+                          {visibleCols.map((col) => (
+                            <td key={col.key}>{renderDoctorCell(d, col.key, setCardId)}</td>
+                          ))}
+                          <td>
+                            {isMP ? (
+                              <div className="flex items-center gap-1">
+                                <Button
+                                  variant="ghost"
+                                  size="icon"
+                                  className="h-8 w-8 text-sky hover:text-brand"
+                                  onClick={() => {
+                                    setFormDoctor(d);
+                                    setFormOpen(true);
+                                  }}
+                                  aria-label={`Редактировать врача ${d.fullName}`}
+                                  title="Редактировать"
+                                >
+                                  <Pencil className="h-4 w-4" strokeWidth={2} />
+                                </Button>
+                                <DeleteButton
+                                  title={`Удалить врача «${d.fullName}»?`}
+                                  description="Будут удалены карточка врача, привязки к ЛПУ, визиты и заявки. Действие будет зафиксировано в журнале аудита."
+                                  onConfirm={async () => {
+                                    try {
+                                      await removeDoctor.mutateAsync(d.id);
+                                    } catch (e) {
+                                      toast.error((e as Error).message);
+                                    }
+                                  }}
+                                />
+                              </div>
+                            ) : (
+                              <span className="text-xs italic text-muted-foreground">—</span>
+                            )}
+                          </td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
               </div>
             </>
           )}
         </div>
       </SectionCard>
 
-      {/* Диалог создания врача (монтируется при открытии — форма инициализируется заново) */}
-      {formOpen && <DoctorFormDialog doctor={null} onOpenChange={setFormOpen} />}
+      {/* Диалог создания / редактирования врача (монтируется при открытии — форма инициализируется заново) */}
+      {formOpen && <DoctorFormDialog doctor={formDoctor} onOpenChange={setFormOpen} />}
 
       {/* CRM-карточка врача */}
       {cardId && (
         <DoctorCardDialog doctorId={cardId} onOpenChange={(o) => { if (!o) setCardId(null); }} />
       )}
+
+      {/* Диалог настройки столбцов списка НВ */}
+      {settingsDialog}
     </div>
   );
 }
 export default DoctorsView;
 
 /* ============================================================
-   Карточка в сетке
+   Ячейка списка НВ по ключу настраиваемого столбца
    ============================================================ */
-function DoctorGridCard({ doctor, onOpen }: { doctor: DoctorItem; onOpen: () => void }) {
+function renderDoctorCell(
+  doctor: DoctorItem,
+  key: string,
+  onOpenCard: (id: string) => void
+): React.ReactNode {
+  switch (key) {
+    case "fullName":
+      return (
+        <button
+          type="button"
+          onClick={() => onOpenCard(doctor.id)}
+          className="font-medium text-azure hover:underline"
+          title="Открыть карточку врача"
+        >
+          {doctor.fullName}
+        </button>
+      );
+    case "status":
+      return doctor.status ? (
+        <StatusPill status={doctor.status} />
+      ) : (
+        <span className="text-xs italic text-muted-foreground">—</span>
+      );
+    case "mp":
+      return <span className="whitespace-nowrap">{doctor.mp?.name ?? "—"}</span>;
+    case "lpu":
+      return <LpuChips lpus={doctor.lpus} />;
+    case "city":
+      return <span className="whitespace-nowrap">{doctor.city?.name ?? "—"}</span>;
+    case "phone":
+      return <span className="whitespace-nowrap text-muted-foreground">{doctor.phone ?? "—"}</span>;
+    case "requests":
+      return (
+        <Badge
+          variant="outline"
+          className="gap-1 border-border bg-white text-[11px] font-medium text-brand"
+          title="Заявок"
+        >
+          <FileText className="h-3 w-3 text-sky" strokeWidth={2} />
+          {doctor._count.requests}
+        </Badge>
+      );
+    case "visits":
+      return (
+        <Badge
+          variant="outline"
+          className="gap-1 border-border bg-white text-[11px] font-medium text-brand"
+          title="Визитов"
+        >
+          <CalendarDays className="h-3 w-3 text-sky" strokeWidth={2} />
+          {doctor._count.visits}
+        </Badge>
+      );
+    default:
+      return null;
+  }
+}
+
+/** Чипы ЛПУ: показываются первые 2, остальные — «+N» (полный список в подсказке) */
+function LpuChips({ lpus }: { lpus: DoctorItem["lpus"] }) {
+  if (!lpus.length) {
+    return <span className="text-xs italic text-muted-foreground">—</span>;
+  }
+  const visible = lpus.slice(0, 2);
+  const hidden = lpus.slice(2);
   return (
-    <Card className="rounded-xl border-border shadow-[0_2px_12px_rgba(25,70,136,0.05)] transition-colors hover:border-azure/40">
-      <CardContent className="flex flex-col gap-3 p-4">
-        <div className="flex items-start justify-between gap-2">
-          <div className="min-w-0">
-            <p className="truncate font-semibold text-brand" title={doctor.fullName}>
-              {doctor.fullName}
-            </p>
-            <p className="mt-0.5 flex items-center gap-1 text-xs text-muted-foreground">
-              <UserRound className="h-3 w-3 text-sky" strokeWidth={2} />
-              МП: {doctor.mp.name}
-            </p>
-          </div>
-          {doctor.status ? (
-            <StatusPill status={doctor.status} />
-          ) : (
-            <span className="shrink-0 rounded-full border border-border px-2 py-0.5 text-[10px] text-muted-foreground">
-              Без статуса
-            </span>
-          )}
-        </div>
-
-        <div className="flex flex-wrap gap-1.5">
-          {doctor.lpus.length === 0 ? (
-            <span className="text-xs italic text-muted-foreground">ЛПУ не привязаны</span>
-          ) : (
-            doctor.lpus.map(({ lpu }) => (
-              <span
-                key={lpu.id}
-                className="inline-flex items-center gap-1 rounded-full bg-sky-light px-2 py-0.5 text-[11px] text-brand"
-                title={`${lpu.city.name}${lpu.address ? `, ${lpu.address}` : ""}`}
-              >
-                <Building2 className="h-3 w-3 text-sky" strokeWidth={2} />
-                {lpu.name}
-              </span>
-            ))
-          )}
-        </div>
-
-        <div className="mt-auto flex flex-wrap items-center justify-between gap-2 border-t border-border/70 pt-2.5">
-          <span className="inline-flex items-center gap-1 text-xs text-muted-foreground">
-            <Phone className="h-3 w-3 text-sky" strokeWidth={2} />
-            {doctor.phone ?? "—"}
-          </span>
-          <div className="flex items-center gap-1.5">
-            <Badge
-              variant="outline"
-              className="gap-1 border-border bg-white text-[11px] font-medium text-brand"
-              title="Заявок"
-            >
-              <FileText className="h-3 w-3 text-sky" strokeWidth={2} />
-              {doctor._count.requests}
-            </Badge>
-            <Badge
-              variant="outline"
-              className="gap-1 border-border bg-white text-[11px] font-medium text-brand"
-              title="Визитов"
-            >
-              <CalendarDays className="h-3 w-3 text-sky" strokeWidth={2} />
-              {doctor._count.visits}
-            </Badge>
-            <Button
-              size="sm"
-              variant="outline"
-              className="h-7 border-azure/40 px-2.5 text-xs text-azure hover:bg-azure hover:text-white"
-              onClick={onOpen}
-            >
-              Карточка
-            </Button>
-          </div>
-        </div>
-      </CardContent>
-    </Card>
+    <div className="flex max-w-[230px] flex-wrap gap-1">
+      {visible.map(({ lpu }) => (
+        <span
+          key={lpu.id}
+          className="inline-flex items-center gap-1 rounded-full bg-sky-light px-2 py-0.5 text-[11px] text-brand"
+          title={`${lpu.city.name}${lpu.address ? `, ${lpu.address}` : ""}`}
+        >
+          <Building2 className="h-3 w-3 text-sky" strokeWidth={2} />
+          {lpu.name}
+        </span>
+      ))}
+      {hidden.length > 0 && (
+        <span
+          className="inline-flex items-center rounded-full border border-border bg-white px-1.5 py-0.5 text-[11px] font-medium text-brand"
+          title={hidden.map(({ lpu }) => lpu.name).join(", ")}
+        >
+          +{hidden.length}
+        </span>
+      )}
+    </div>
   );
 }
 
@@ -334,6 +501,8 @@ interface DoctorFormState {
   mpId: string;
   cityId: string;
   lpuIds: string[];
+  specializationIds: string[];
+  workSchedule: string;
   comment: string;
 }
 
@@ -345,20 +514,29 @@ const emptyDoctorForm: DoctorFormState = {
   mpId: "",
   cityId: NONE,
   lpuIds: [],
+  specializationIds: [],
+  workSchedule: "",
   comment: "",
 };
 
-/** Начальное состояние формы: из карточки при редактировании / пустая при создании */
-function initDoctorForm(doctor: EditableDoctor | null): DoctorFormState {
-  if (!doctor) return emptyDoctorForm;
+/**
+ * Начальное состояние формы: из карточки при редактировании / пустая при создании.
+ * Для МП при создании врач по умолчанию закрепляется за текущим пользователем.
+ */
+function initDoctorForm(doctor: EditableDoctor | null, isMP: boolean, sessionUid?: string): DoctorFormState {
+  if (!doctor) {
+    return { ...emptyDoctorForm, mpId: isMP && sessionUid ? sessionUid : "" };
+  }
   return {
     fullName: doctor.fullName,
     phone: doctor.phone ?? "",
     birthDate: doctor.birthDate ? doctor.birthDate.slice(0, 10) : "",
     statusId: doctor.statusId ?? NONE,
-    mpId: doctor.mpId,
+    mpId: doctor.mpId ?? NONE, // null → «— Без МП —» (НВ без куратора)
     cityId: doctor.cityId ?? NONE,
     lpuIds: doctor.lpus?.map((x) => x.lpu.id) ?? [],
+    specializationIds: doctor.specializations?.map((s) => s.specialization.id) ?? [],
+    workSchedule: doctor.workSchedule ?? "",
     comment: doctor.comment ?? "",
   };
 }
@@ -371,7 +549,11 @@ function DoctorFormDialog({
   doctor: EditableDoctor | null;
 }) {
   const qc = useQueryClient();
-  const [form, setForm] = useState<DoctorFormState>(() => initDoctorForm(doctor));
+  const { data: session } = useSession();
+  const isMP = (session?.user as SessionUserWithRole)?.role === "MP";
+  const [form, setForm] = useState<DoctorFormState>(() =>
+    initDoctorForm(doctor, isMP, (session?.user as SessionUserWithRole)?.uid)
+  );
 
   const { data: users } = useQuery<UserBasic[]>({
     queryKey: ["users-basic"],
@@ -389,6 +571,10 @@ function DoctorFormDialog({
     queryKey: ["lpus"],
     queryFn: () => api.get("/api/app/lpus"),
   });
+  const { data: specializations } = useQuery<SpecializationItem[]>({
+    queryKey: ["specializations", "active"],
+    queryFn: () => api.get("/api/app/specializations?active=1"),
+  });
 
   const mps = useMemo(() => (users ?? []).filter((u) => u.role === "MP"), [users]);
 
@@ -405,18 +591,32 @@ function DoctorFormDialog({
     });
   }
 
+  /** Переключение специализации (необязательный мультивыбор) */
+  function toggleSpecialization(id: string, checked: boolean) {
+    setForm((f) => ({
+      ...f,
+      specializationIds: checked
+        ? [...f.specializationIds, id]
+        : f.specializationIds.filter((x) => x !== id),
+    }));
+  }
+
   const save = useMutation({
     mutationFn: () => {
-      const body = {
+      const body: Record<string, unknown> = {
         fullName: form.fullName.trim(),
         phone: form.phone.trim() || null,
         birthDate: form.birthDate || null,
         statusId: form.statusId === NONE ? null : form.statusId,
-        mpId: form.mpId,
         cityId: form.cityId === NONE ? null : form.cityId,
         lpuIds: form.lpuIds,
+        specializationIds: form.specializationIds,
+        workSchedule: form.workSchedule.trim() || null,
         comment: form.comment.trim() || null,
       };
+      // mpId передается только ролью МП: оператор создает НВ без куратора,
+      // МП закрепится позднее. Пустое значение при редактировании = открепить МП.
+      if (isMP) body.mpId = form.mpId === NONE ? "" : form.mpId;
       return doctor ? api.put(`/api/app/doctors/${doctor.id}`, body) : api.post("/api/app/doctors", body);
     },
     onSuccess: () => {
@@ -431,13 +631,15 @@ function DoctorFormDialog({
 
   return (
     <Dialog open onOpenChange={onOpenChange}>
-      <DialogContent className="sm:max-w-2xl">
+      <DialogContent className="max-h-[calc(100dvh-4rem)] overflow-y-auto sm:max-w-2xl">
         <DialogHeader>
           <DialogTitle className="font-display text-brand">
             {doctor ? "Редактирование врача" : "Новый направляющий врач"}
           </DialogTitle>
           <DialogDescription>
-            Карточка НВ — ключевая сущность CRM: статус, курирующий МП и привязки к ЛПУ
+            {isMP
+              ? "Карточка НВ — ключевая сущность CRM: статус, курирующий МП и привязки к ЛПУ"
+              : "Обязательное поле — только ФИО; МП закрепит врача за собой позднее"}
           </DialogDescription>
         </DialogHeader>
 
@@ -485,23 +687,50 @@ function DoctorFormDialog({
               </SelectContent>
             </Select>
           </div>
+
+          {/* Курирующий МП: у оператора поле неактивно и не отправляется */}
           <div className="space-y-1.5">
             <Label>
-              Курирующий МП <span className="text-terra-dark">*</span>
+              Курирующий МП
+              {isMP && !doctor && <span className="text-terra-dark"> *</span>}
             </Label>
-            <Select value={form.mpId} onValueChange={(v) => setForm({ ...form, mpId: v })}>
-              <SelectTrigger className="bg-white">
-                <SelectValue placeholder="Выберите МП" />
-              </SelectTrigger>
-              <SelectContent>
-                {mps.map((m) => (
-                  <SelectItem key={m.id} value={m.id}>
-                    {m.name}
-                  </SelectItem>
-                ))}
-              </SelectContent>
-            </Select>
+            {isMP ? (
+              <>
+                <Select value={form.mpId} onValueChange={(v) => setForm({ ...form, mpId: v })}>
+                  <SelectTrigger className="bg-white">
+                    <SelectValue placeholder="Выберите МП" />
+                  </SelectTrigger>
+                  <SelectContent>
+                    {doctor && <SelectItem value={NONE}>— Без МП —</SelectItem>}
+                    {mps.map((m) => (
+                      <SelectItem key={m.id} value={m.id}>
+                        {m.name}
+                      </SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
+                {doctor && (
+                  <p className="text-[11px] text-muted-foreground">
+                    «— Без МП —» — открепить курирующего МП (врач останется без куратора)
+                  </p>
+                )}
+              </>
+            ) : (
+              <>
+                <Input
+                  disabled
+                  readOnly
+                  value=""
+                  placeholder="Не назначен"
+                  className="bg-white text-muted-foreground"
+                />
+                <p className="text-[11px] text-muted-foreground">
+                  Будет закреплен МП позднее
+                </p>
+              </>
+            )}
           </div>
+
           <div className="space-y-1.5">
             <Label>Город</Label>
             <Select value={form.cityId} onValueChange={(v) => setForm({ ...form, cityId: v })}>
@@ -517,6 +746,16 @@ function DoctorFormDialog({
                 ))}
               </SelectContent>
             </Select>
+          </div>
+
+          {/* График работы НВ — необязательное текстовое поле (полная ширина) */}
+          <div className="space-y-1.5 md:col-span-2">
+            <Label>График работы НВ</Label>
+            <Input
+              value={form.workSchedule}
+              onChange={(e) => setForm({ ...form, workSchedule: e.target.value })}
+              placeholder="Например: Пн–Пт, 9:00–15:00"
+            />
           </div>
 
           {/* Множественный выбор ЛПУ */}
@@ -552,6 +791,37 @@ function DoctorFormDialog({
             </p>
           </div>
 
+          {/* Множественный выбор специализаций (стиль — как у привязки к ЛПУ) */}
+          <div className="space-y-1.5 md:col-span-2">
+            <div className="flex items-center justify-between">
+              <Label>Специализация</Label>
+              <span className="text-[11px] text-muted-foreground">
+                Выбрано: {form.specializationIds.length}
+              </span>
+            </div>
+            <div className="max-h-40 space-y-1 overflow-y-auto rounded-lg border border-border bg-white p-3">
+              {!specializations?.length ? (
+                <p className="py-2 text-center text-xs text-muted-foreground">
+                  Сначала добавьте специализации в разделе «Справочники»
+                </p>
+              ) : (
+                specializations.map((s) => (
+                  <label
+                    key={s.id}
+                    className="flex cursor-pointer items-center gap-2.5 rounded-md px-2 py-1.5 hover:bg-sky-light/60"
+                  >
+                    <Checkbox
+                      checked={form.specializationIds.includes(s.id)}
+                      onCheckedChange={(c) => toggleSpecialization(s.id, c === true)}
+                      aria-label={`Специализация ${s.name}`}
+                    />
+                    <span className="text-sm text-brand">{s.name}</span>
+                  </label>
+                ))
+              )}
+            </div>
+          </div>
+
           <div className="space-y-1.5 md:col-span-2">
             <Label>Комментарий</Label>
             <Textarea
@@ -569,7 +839,7 @@ function DoctorFormDialog({
           </Button>
           <Button
             onClick={() => save.mutate()}
-            disabled={!form.fullName.trim() || !form.mpId || save.isPending}
+            disabled={!form.fullName.trim() || (isMP && !doctor && !form.mpId) || save.isPending}
             className="bg-azure hover:bg-azure-dark"
           >
             {save.isPending && <Loader2 className="h-4 w-4 animate-spin" strokeWidth={2} />}
@@ -600,7 +870,7 @@ function DoctorCardDialog({
 }) {
   const qc = useQueryClient();
   const { data: session } = useSession();
-  const isMP = session?.user?.role === "MP";
+  const isMP = (session?.user as SessionUserWithRole)?.role === "MP";
   const { setActiveView } = useUiStore();
   const [editOpen, setEditOpen] = useState(false);
   const [visitFormOpen, setVisitFormOpen] = useState(false);
@@ -674,7 +944,13 @@ function DoctorCardDialog({
     },
   });
 
-  const doneCount = card?.requests.filter((r) => r.doneId != null).length ?? 0;
+  // Заявка выполнена, если есть хотя бы одна позиция «Сделано»
+  // (API карточки возвращает сырые prisma-строки — читаем защитно)
+  const doneCount =
+    card?.requests.filter((r) => {
+      const raw = r as { doneId?: string | null; items?: Array<{ kind: string } | null> };
+      return raw.doneId != null || !!raw.items?.some((i) => i?.kind === "DONE");
+    }).length ?? 0;
 
   const nextVisit = useMemo(() => {
     if (!card) return null;
@@ -706,7 +982,7 @@ function DoctorCardDialog({
                 <DialogDescription className="flex flex-wrap items-center gap-x-4 gap-y-1 text-xs">
                   <span className="inline-flex items-center gap-1">
                     <UserRound className="h-3 w-3 text-sky" strokeWidth={2} />
-                    МП: {card?.mp.name ?? "—"}
+                    МП: {card?.mp?.name ?? "—"}
                   </span>
                   <span className="inline-flex items-center gap-1">
                     <Phone className="h-3 w-3 text-sky" strokeWidth={2} />
@@ -778,8 +1054,27 @@ function DoctorCardDialog({
                     <Field label="Телефон" value={card.phone ?? "—"} />
                     <Field label="Дата рождения" value={card.birthDate ? fmtDate(card.birthDate) : "—"} />
                     <Field label="Город" value={card.city?.name ?? "—"} />
-                    <Field label="Курирующий МП" value={card.mp.name} />
+                    <Field
+                      label="Курирующий МП"
+                      value={
+                        card.mp ? (
+                          card.mp.name
+                        ) : (
+                          <Badge
+                            variant="outline"
+                            className="border-terra/50 bg-terra-light text-[10px] text-terra-dark"
+                          >
+                            Не закреплен
+                          </Badge>
+                        )
+                      }
+                    />
                     <Field label="Статус сотрудничества" value={card.status?.name ?? "—"} />
+                    <Field
+                      label="График работы НВ"
+                      value={card.workSchedule ?? "—"}
+                      className="sm:col-span-2"
+                    />
                     <Field
                       label="Комментарий"
                       value={card.comment ?? "—"}
@@ -790,19 +1085,22 @@ function DoctorCardDialog({
                   <div>
                     <div className="mb-2 flex items-center justify-between">
                       <p className="text-sm font-semibold text-brand">Привязки к ЛПУ</p>
-                      <Button
-                        size="sm"
-                        variant="outline"
-                        className="gap-1.5 border-azure/40 text-azure hover:bg-azure hover:text-white"
-                        onClick={() => setEditOpen(true)}
-                      >
-                        <Pencil className="h-3.5 w-3.5" strokeWidth={2} /> Редактировать
-                      </Button>
+                      {/* Редактирование карточки — только МП */}
+                      {isMP && (
+                        <Button
+                          size="sm"
+                          variant="outline"
+                          className="gap-1.5 border-azure/40 text-azure hover:bg-azure hover:text-white"
+                          onClick={() => setEditOpen(true)}
+                        >
+                          <Pencil className="h-3.5 w-3.5" strokeWidth={2} /> Редактировать
+                        </Button>
+                      )}
                     </div>
                     <div className="flex flex-wrap gap-1.5">
                       {card.lpus.length === 0 ? (
                         <span className="text-xs italic text-muted-foreground">
-                          ЛПУ не привязаны — нажмите «Редактировать»
+                          {isMP ? "ЛПУ не привязаны — нажмите «Редактировать»" : "ЛПУ не привязаны"}
                         </span>
                       ) : (
                         card.lpus.map(({ lpu }) => (
@@ -813,6 +1111,25 @@ function DoctorCardDialog({
                             <Building2 className="h-3 w-3 text-sky" strokeWidth={2} />
                             {lpu.name}
                             <span className="text-muted-foreground">· {lpu.city.name}</span>
+                          </span>
+                        ))
+                      )}
+                    </div>
+                  </div>
+
+                  {/* Специализации — чипы в стиле привязок к ЛПУ (редактирование в форме карточки) */}
+                  <div>
+                    <p className="mb-2 text-sm font-semibold text-brand">Специализация</p>
+                    <div className="flex flex-wrap gap-1.5">
+                      {card.specializations.length === 0 ? (
+                        <span className="text-xs italic text-muted-foreground">—</span>
+                      ) : (
+                        card.specializations.map(({ specialization }) => (
+                          <span
+                            key={specialization.id}
+                            className="inline-flex items-center rounded-full bg-sky-light px-2.5 py-1 text-xs text-brand"
+                          >
+                            {specialization.name}
                           </span>
                         ))
                       )}
@@ -1064,24 +1381,42 @@ function DoctorCardDialog({
                           </TableRow>
                         </TableHeader>
                         <TableBody>
-                          {card.requests.map((r) => (
-                            <TableRow key={r.id}>
-                              <TableCell className="whitespace-nowrap text-muted-foreground">
-                                {fmtDate(r.date)}
-                              </TableCell>
-                              <TableCell className="font-medium text-brand">{r.patientName}</TableCell>
-                              <TableCell className="text-sm">{r.assigned?.name ?? "—"}</TableCell>
-                              <TableCell>
-                                {r.done ? (
-                                  <span className="text-sm">{r.done.name}</span>
-                                ) : (
-                                  <Badge className="border-transparent bg-terra-light text-[10px] text-terra-dark hover:bg-terra-light">
-                                    Ожидает
-                                  </Badge>
-                                )}
-                              </TableCell>
-                            </TableRow>
-                          ))}
+                          {card.requests.map((r) => {
+                            // API карточки возвращает сырые prisma-строки с items (kind: ASSIGNED | DONE) —
+                            // читаем защитно через optional chaining, не полагаясь на тип RequestItem
+                            const raw = r as {
+                              items?: Array<{ kind: string; nomenclature?: { name: string } | null } | null>;
+                            };
+                            const names = (kind: string) =>
+                              raw.items
+                                ?.filter((i) => i?.kind === kind)
+                                .map((i) => i?.nomenclature?.name)
+                                .filter((n): n is string => Boolean(n))
+                                .join(", ") || "";
+                            const assigned = names("ASSIGNED");
+                            const done = names("DONE");
+                            return (
+                              <TableRow key={r.id}>
+                                <TableCell className="whitespace-nowrap text-muted-foreground">
+                                  {fmtDate(r.date)}
+                                </TableCell>
+                                <TableCell className="font-medium text-brand">{r.patientName}</TableCell>
+                                <TableCell className="text-sm">{assigned || "—"}</TableCell>
+                                <TableCell>
+                                  {done ? (
+                                    <span className="text-sm">{done}</span>
+                                  ) : (
+                                    <Badge
+                                      variant="outline"
+                                      className="border-azure/30 bg-sky-light text-[10px] font-medium text-azure hover:bg-sky-light"
+                                    >
+                                      Ожидает
+                                    </Badge>
+                                  )}
+                                </TableCell>
+                              </TableRow>
+                            );
+                          })}
                         </TableBody>
                       </Table>
                     </div>

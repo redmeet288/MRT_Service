@@ -53,3 +53,32 @@ export async function DELETE(req: NextRequest) {
   await audit(session, "DELETE", "lpu", id, `ЛПУ: ${lpu.name}`);
   return NextResponse.json({ ok: true });
 }
+
+// PUT /api/app/lpus — редактирование ЛПУ
+export async function PUT(req: NextRequest) {
+  const { session, error } = await requireAuth();
+  if (error) return error;
+  const body = await req.json().catch(() => null);
+  const id = String(body?.id ?? "");
+  const name = String(body?.name ?? "").trim();
+  const cityId = String(body?.cityId ?? "");
+  if (!id) return badRequest("Не указан id");
+  if (!name || !cityId) return badRequest("Укажите название и город");
+  const dup = await db.lpu.findFirst({ where: { name, cityId, NOT: { id } } });
+  if (dup) return badRequest("Такое ЛПУ уже существует в этом городе");
+  const lpu = await db.lpu
+    .update({
+      where: { id },
+      data: {
+        name,
+        cityId,
+        ...(body?.address !== undefined
+          ? { address: body.address ? String(body.address) : null }
+          : {}),
+      },
+    })
+    .catch(() => null);
+  if (!lpu) return notFound("ЛПУ не найдено");
+  await audit(session, "UPDATE", "lpu", id, `ЛПУ: ${name}`);
+  return NextResponse.json(lpu);
+}

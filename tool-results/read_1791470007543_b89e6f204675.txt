@@ -1,0 +1,849 @@
+     1→"use client";
+     2→
+     3→import { useMemo, useState } from "react";
+     4→import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+     5→import { toast } from "sonner";
+     6→import { format, subDays } from "date-fns";
+     7→import * as XLSX from "xlsx";
+     8→import jsPDF from "jspdf";
+     9→import autoTable from "jspdf-autotable";
+    10→import { api, qs } from "@/lib/api-client";
+    11→import type {
+    12→  CityData,
+    13→  DoctorItem,
+    14→  NomenclatureItem,
+    15→  ReportPreset,
+    16→  ReportRequestRow,
+    17→  ReportResponse,
+    18→  UserBasic,
+    19→} from "@/lib/types";
+    20→import {
+    21→  DeleteButton,
+    22→  EmptyState,
+    23→  RowsSkeleton,
+    24→  fmtDate,
+    25→  fmtDateTime,
+    26→} from "@/components/shared/ui-bits";
+    27→import { Badge } from "@/components/ui/badge";
+    28→import { Button } from "@/components/ui/button";
+    29→import { Input } from "@/components/ui/input";
+    30→import { Label } from "@/components/ui/label";
+    31→import { Switch } from "@/components/ui/switch";
+    32→import {
+    33→  Dialog,
+    34→  DialogContent,
+    35→  DialogDescription,
+    36→  DialogFooter,
+    37→  DialogHeader,
+    38→  DialogTitle,
+    39→} from "@/components/ui/dialog";
+    40→import {
+    41→  Popover,
+    42→  PopoverContent,
+    43→  PopoverTrigger,
+    44→} from "@/components/ui/popover";
+    45→import {
+    46→  Select,
+    47→  SelectContent,
+    48→  SelectItem,
+    49→  SelectTrigger,
+    50→  SelectValue,
+    51→} from "@/components/ui/select";
+    52→import {
+    53→  Table,
+    54→  TableBody,
+    55→  TableCell,
+    56→  TableHead,
+    57→  TableHeader,
+    58→  TableRow,
+    59→} from "@/components/ui/table";
+    60→import {
+    61→  Bookmark,
+    62→  Building2,
+    63→  CheckCircle2,
+    64→  ChevronRight,
+    65→  Coins,
+    66→  FileDown,
+    67→  FileSpreadsheet,
+    68→  Save,
+    69→  Stethoscope,
+    70→  UserRound,
+    71→} from "lucide-react";
+    72→import { cn } from "@/lib/utils";
+    73→
+    74→/* ============================================================
+    75→   Транслитерация для PDF (jsPDF стандартно не поддерживает
+    76→   кириллицу) — простая карта а-я → a-ya
+    77→   ============================================================ */
+    78→const TRANSLIT: Record<string, string> = {
+    79→  а: "a", б: "b", в: "v", г: "g", д: "d", е: "e", ё: "e", ж: "zh", з: "z",
+    80→  и: "i", й: "y", к: "k", л: "l", м: "m", н: "n", о: "o", п: "p", р: "r",
+    81→  с: "s", т: "t", у: "u", ф: "f", х: "kh", ц: "ts", ч: "ch", ш: "sh",
+    82→  щ: "sch", ъ: "", ы: "y", ь: "", э: "e", ю: "yu", я: "ya",
+    83→};
+    84→
+    85→function translit(value: string): string {
+    86→  return (value ?? "")
+    87→    .split("")
+    88→    .map((ch) => {
+    89→      const lower = ch.toLowerCase();
+    90→      const t = TRANSLIT[lower];
+    91→      if (t === undefined) return ch; // латиница, цифры, пунктуация — как есть
+    92→      if (t === "") return "";
+    93→      if (ch !== lower) return t.charAt(0).toUpperCase() + t.slice(1);
+    94→      return t;
+    95→    })
+    96→    .join("");
+    97→}
+    98→
+    99→/* ============================================================ */
+   100→
+   101→const pct = (done: number, total: number) =>
+   102→  total > 0 ? Math.round((done / total) * 100) : 0;
+   103→
+   104→function pctBadgeClass(p: number): string {
+   105→  if (p >= 66) return "bg-azure/15 text-azure-dark";
+   106→  if (p >= 33) return "bg-sky-light text-brand";
+   107→  return "bg-terra-light text-terra-dark";
+   108→}
+   109→
+   110→function toggleSet(
+   111→  setter: React.Dispatch<React.SetStateAction<Set<string>>>,
+   112→  id: string
+   113→) {
+   114→  setter((prev) => {
+   115→    const next = new Set(prev);
+   116→    if (next.has(id)) next.delete(id);
+   117→    else next.add(id);
+   118→    return next;
+   119→  });
+   120→}
+   121→
+   122→interface FlatRow {
+   123→  mp: string;
+   124→  lpu: string;
+   125→  city: string;
+   126→  doctor: string;
+   127→  date: string;
+   128→  patient: string;
+   129→  destination: string;
+   130→  assigned: string;
+   131→  done: string;
+   132→}
+   133→
+   134→export function ReportsView() {
+   135→  const qc = useQueryClient();
+   136→
+   137→  // —— Фильтры ("" = без фильтра) ——
+   138→  const [from, setFrom] = useState(() => format(subDays(new Date(), 90), "yyyy-MM-dd"));
+   139→  const [to, setTo] = useState(() => format(new Date(), "yyyy-MM-dd"));
+   140→  const [mpId, setMpId] = useState("");
+   141→  const [lpuId, setLpuId] = useState("");
+   142→  const [doctorId, setDoctorId] = useState("");
+   143→  const [assignedId, setAssignedId] = useState("");
+   144→  const [doneFilter, setDoneFilter] = useState(""); // "" | "1" | "0"
+   145→
+   146→  // —— Раскрытые группы дерева (контролируемый аккордеон на state) ——
+   147→  const [openMp, setOpenMp] = useState<Set<string>>(new Set());
+   148→  const [openLpu, setOpenLpu] = useState<Set<string>>(new Set());
+   149→  const [openDoc, setOpenDoc] = useState<Set<string>>(new Set());
+   150→
+   151→  // —— Пресеты ——
+   152→  const [presetsOpen, setPresetsOpen] = useState(false);
+   153→  const [saveOpen, setSaveOpen] = useState(false);
+   154→  const [presetName, setPresetName] = useState("");
+   155→
+   156→  // —— Справочники ——
+   157→  const { data: users } = useQuery<UserBasic[]>({
+   158→    queryKey: ["users-basic"],
+   159→    queryFn: () => api.get("/api/app/users?basic=1"),
+   160→  });
+   161→  const mps = useMemo(() => (users ?? []).filter((u) => u.role === "MP"), [users]);
+   162→
+   163→  const { data: lpus } = useQuery<CityData[]>({
+   164→    queryKey: ["lpus"],
+   165→    queryFn: () => api.get("/api/app/lpus"),
+   166→  });
+   167→
+   168→  const { data: doctors } = useQuery<DoctorItem[]>({
+   169→    queryKey: ["doctors"],
+   170→    queryFn: () => api.get("/api/app/doctors"),
+   171→  });
+   172→  const doctorOptions = useMemo(
+   173→    () => (doctors ?? []).filter((d) => !mpId || d.mpId === mpId),
+   174→    [doctors, mpId]
+   175→  );
+   176→
+   177→  const { data: nomenclature } = useQuery<NomenclatureItem[]>({
+   178→    queryKey: ["nomenclature-active"],
+   179→    queryFn: () => api.get("/api/app/nomenclature?active=1"),
+   180→  });
+   181→
+   182→  const { data: presets } = useQuery<ReportPreset[]>({
+   183→    queryKey: ["presets"],
+   184→    queryFn: () => api.get("/api/app/presets"),
+   185→  });
+   186→
+   187→  // —— Отчет ——
+   188→  const reportQuery = useQuery<ReportResponse>({
+   189→    queryKey: ["report-examinations", from, to, mpId, lpuId, doctorId, assignedId, doneFilter],
+   190→    queryFn: () =>
+   191→      api.get<ReportResponse>(
+   192→        `/api/app/reports/examinations${qs({
+   193→          from,
+   194→          to: `${to}T23:59:59`,
+   195→          mpId,
+   196→          lpuId,
+   197→          doctorId,
+   198→          assignedId,
+   199→          done: doneFilter === "" ? undefined : doneFilter,
+   200→        })}`
+   201→      ),
+   202→    enabled: Boolean(from && to),
+   203→  });
+   204→  const data = reportQuery.data;
+   205→
+   206→  const doneTotal = useMemo(
+   207→    () => (data?.tree ?? []).reduce((s, m) => s + m.done, 0),
+   208→    [data]
+   209→  );
+   210→  const total = data?.total ?? 0;
+   211→
+   212→  // —— Плоские строки для экспорта ——
+   213→  const flatRows = useMemo<FlatRow[]>(() => {
+   214→    const rows: FlatRow[] = [];
+   215→    (data?.tree ?? []).forEach((mp) =>
+   216→      mp.lpus.forEach((lpu) =>
+   217→        lpu.doctors.forEach((doc) =>
+   218→          doc.requests.forEach((r) =>
+   219→            rows.push({
+   220→              mp: mp.name,
+   221→              lpu: lpu.name,
+   222→              city: lpu.city,
+   223→              doctor: doc.name,
+   224→              date: fmtDate(r.date),
+   225→              patient: r.patientName,
+   226→              destination: r.destination ?? "—",
+   227→              assigned: r.assigned ?? "—",
+   228→              done: r.done ?? "Не выполнено",
+   229→            })
+   230→          )
+   231→        )
+   232→      )
+   233→    );
+   234→    return rows;
+   235→  }, [data]);
+   236→
+   237→  // —— Аудит экспорта (ТЗ п.8) — фиксация до формирования файла ——
+   238→  async function logExport(kind: string) {
+   239→    try {
+   240→      await api.post("/api/app/audit", {
+   241→        action: "EXPORT",
+   242→        entity: "report",
+   243→        details: `Экспорт отчета «По обследованиям»: ${flatRows.length} строк, период ${from}–${to}, формат ${kind}`,
+   244→      });
+   245→    } catch {
+   246→      // журнал аудита не блокирует выгрузку
+   247→    }
+   248→  }
+   249→
+   250→  async function doExport(kind: "Excel" | "PDF") {
+   251→    if (!flatRows.length) {
+   252→      toast.error("Нет данных для экспорта");
+   253→      return;
+   254→    }
+   255→    await logExport(kind);
+   256→
+   257→    if (kind === "Excel") {
+   258→      const ws = XLSX.utils.json_to_sheet(
+   259→        flatRows.map((r) => ({
+   260→          "МП": r.mp,
+   261→          "ЛПУ": r.lpu,
+   262→          "Город": r.city,
+   263→          "НВ": r.doctor,
+   264→          "Дата": r.date,
+   265→          "Пациент": r.patient,
+   266→          "Куда": r.destination,
+   267→          "Назначено": r.assigned,
+   268→          "Сделано": r.done,
+   269→        }))
+   270→      );
+   271→      ws["!cols"] = [
+   272→        { wch: 22 }, { wch: 28 }, { wch: 14 }, { wch: 28 },
+   273→        { wch: 12 }, { wch: 24 }, { wch: 22 }, { wch: 24 }, { wch: 18 },
+   274→      ];
+   275→      const wb = XLSX.utils.book_new();
+   276→      XLSX.utils.book_append_sheet(wb, ws, "Отчет");
+   277→      XLSX.writeFile(wb, "otchet-po-obsledovaniyam.xlsx");
+   278→    } else {
+   279→      const doc = new jsPDF({ orientation: "landscape" });
+   280→      autoTable(doc, {
+   281→        head: [["MP", "LPU", "Gorod", "NV", "Data", "Pacient", "Kuda", "Naznacheno", "Sdelano"]],
+   282→        body: flatRows.map((r) => [
+   283→          translit(r.mp),
+   284→          translit(r.lpu),
+   285→          translit(r.city),
+   286→          translit(r.doctor),
+   287→          r.date,
+   288→          translit(r.patient),
+   289→          translit(r.destination),
+   290→          translit(r.assigned),
+   291→          translit(r.done),
+   292→        ]),
+   293→        styles: { fontSize: 8, cellPadding: 3 },
+   294→        headStyles: { fillColor: [25, 70, 136], textColor: 255 },
+   295→        alternateRowStyles: { fillColor: [227, 234, 248] },
+   296→      });
+   297→      doc.save("otchet-po-obsledovaniyam.pdf");
+   298→    }
+   299→    toast.success(`Экспорт ${kind} выполнен: ${flatRows.length} строк`);
+   300→  }
+   301→
+   302→  // —— Мутации пресетов ——
+   303→  const savePreset = useMutation({
+   304→    mutationFn: () =>
+   305→      api.post("/api/app/presets", {
+   306→        name: presetName.trim(),
+   307→        reportKey: "examinations",
+   308→        filters: { from, to, mpId, lpuId, doctorId, assignedId, done: doneFilter },
+   309→      }),
+   310→    onSuccess: () => {
+   311→      toast.success("Пресет сохранен");
+   312→      setPresetName("");
+   313→      setSaveOpen(false);
+   314→      qc.invalidateQueries({ queryKey: ["presets"] });
+   315→    },
+   316→    onError: (e: Error) => toast.error(e.message),
+   317→  });
+   318→
+   319→  const removePreset = useMutation({
+   320→    mutationFn: (id: string) => api.del(`/api/app/presets/${id}`),
+   321→    onSuccess: () => {
+   322→      toast.success("Пресет удален");
+   323→      qc.invalidateQueries({ queryKey: ["presets"] });
+   324→    },
+   325→    onError: (e: Error) => toast.error(e.message),
+   326→  });
+   327→
+   328→  function applyPreset(p: ReportPreset) {
+   329→    try {
+   330→      const f = JSON.parse(p.filtersJson) as Partial<{
+   331→        from: string;
+   332→        to: string;
+   333→        mpId: string;
+   334→        lpuId: string;
+   335→        doctorId: string;
+   336→        assignedId: string;
+   337→        done: string;
+   338→      }>;
+   339→      setFrom(f.from ?? "");
+   340→      setTo(f.to ?? "");
+   341→      setMpId(f.mpId ?? "");
+   342→      setLpuId(f.lpuId ?? "");
+   343→      setDoctorId(f.doctorId ?? "");
+   344→      setAssignedId(f.assignedId ?? "");
+   345→      setDoneFilter(f.done ?? "");
+   346→      setPresetsOpen(false);
+   347→      toast.success(`Пресет «${p.name}» применен`);
+   348→    } catch {
+   349→      toast.error("Не удалось применить пресет");
+   350→    }
+   351→  }
+   352→
+   353→  return (
+   354→    <div className="space-y-6">
+   355→      {/* —— Параметры отчета —— */}
+   356→      <section className="rounded-xl border border-border bg-white p-6 shadow-[0_2px_12px_rgba(25,70,136,0.05)]">
+   357→        <div className="mb-4">
+   358→          <h3 className="font-display text-base font-bold text-brand">Параметры отчета</h3>
+   359→          <p className="mt-0.5 text-xs text-muted-foreground">
+   360→            Базовый отчет «По обследованиям» · иерархия МП → ЛПУ → НВ → детализация заявок
+   361→          </p>
+   362→        </div>
+   363→        <div className="grid grid-cols-1 gap-4 md:grid-cols-2 xl:grid-cols-4">
+   364→          <div className="space-y-1.5">
+   365→            <Label className="text-xs text-muted-foreground">Период с</Label>
+   366→            <Input
+   367→              type="date"
+   368→              value={from}
+   369→              onChange={(e) => setFrom(e.target.value)}
+   370→              className="bg-white"
+   371→            />
+   372→          </div>
+   373→          <div className="space-y-1.5">
+   374→            <Label className="text-xs text-muted-foreground">Период по</Label>
+   375→            <Input
+   376→              type="date"
+   377→              value={to}
+   378→              onChange={(e) => setTo(e.target.value)}
+   379→              className="bg-white"
+   380→            />
+   381→          </div>
+   382→          <div className="space-y-1.5">
+   383→            <Label className="text-xs text-muted-foreground">Медицинский представитель</Label>
+   384→            <Select value={mpId || "ALL"} onValueChange={(v) => setMpId(v === "ALL" ? "" : v)}>
+   385→              <SelectTrigger className="bg-white">
+   386→                <SelectValue placeholder="Все МП" />
+   387→              </SelectTrigger>
+   388→              <SelectContent>
+   389→                <SelectItem value="ALL">Все МП</SelectItem>
+   390→                {mps.map((u) => (
+   391→                  <SelectItem key={u.id} value={u.id}>
+   392→                    {u.name}
+   393→                  </SelectItem>
+   394→                ))}
+   395→              </SelectContent>
+   396→            </Select>
+   397→          </div>
+   398→          <div className="space-y-1.5">
+   399→            <Label className="text-xs text-muted-foreground">ЛПУ</Label>
+   400→            <Select value={lpuId || "ALL"} onValueChange={(v) => setLpuId(v === "ALL" ? "" : v)}>
+   401→              <SelectTrigger className="bg-white">
+   402→                <SelectValue placeholder="Все ЛПУ" />
+   403→              </SelectTrigger>
+   404→              <SelectContent className="max-h-60">
+   405→                <SelectItem value="ALL">Все ЛПУ</SelectItem>
+   406→                {(lpus ?? []).map((l) => (
+   407→                  <SelectItem key={l.id} value={l.id}>
+   408→                    {l.name}
+   409→                  </SelectItem>
+   410→                ))}
+   411→              </SelectContent>
+   412→            </Select>
+   413→          </div>
+   414→          <div className="space-y-1.5">
+   415→            <Label className="text-xs text-muted-foreground">Направляющий врач (НВ)</Label>
+   416→            <Select
+   417→              value={doctorId || "ALL"}
+   418→              onValueChange={(v) => setDoctorId(v === "ALL" ? "" : v)}
+   419→            >
+   420→              <SelectTrigger className="bg-white">
+   421→                <SelectValue placeholder="Все НВ" />
+   422→              </SelectTrigger>
+   423→              <SelectContent className="max-h-60">
+   424→                <SelectItem value="ALL">Все НВ</SelectItem>
+   425→                {doctorOptions.map((d) => (
+   426→                  <SelectItem key={d.id} value={d.id}>
+   427→                    {d.fullName}
+   428→                  </SelectItem>
+   429→                ))}
+   430→              </SelectContent>
+   431→            </Select>
+   432→          </div>
+   433→          <div className="space-y-1.5">
+   434→            <Label className="text-xs text-muted-foreground">Что назначено</Label>
+   435→            <Select
+   436→              value={assignedId || "ALL"}
+   437→              onValueChange={(v) => setAssignedId(v === "ALL" ? "" : v)}
+   438→            >
+   439→              <SelectTrigger className="bg-white">
+   440→                <SelectValue placeholder="Любое назначение" />
+   441→              </SelectTrigger>
+   442→              <SelectContent className="max-h-60">
+   443→                <SelectItem value="ALL">Любое назначение</SelectItem>
+   444→                {(nomenclature ?? []).map((n) => (
+   445→                  <SelectItem key={n.id} value={n.id}>
+   446→                    {n.name}
+   447→                  </SelectItem>
+   448→                ))}
+   449→              </SelectContent>
+   450→            </Select>
+   451→          </div>
+   452→          <div className="space-y-1.5">
+   453→            <Label className="text-xs text-muted-foreground">Выполненность</Label>
+   454→            <Select
+   455→              value={doneFilter || "ALL"}
+   456→              onValueChange={(v) => setDoneFilter(v === "ALL" ? "" : v)}
+   457→            >
+   458→              <SelectTrigger className="bg-white">
+   459→                <SelectValue />
+   460→              </SelectTrigger>
+   461→              <SelectContent>
+   462→                <SelectItem value="ALL">Все</SelectItem>
+   463→                <SelectItem value="1">Только выполненные</SelectItem>
+   464→                <SelectItem value="0">Только невыполненные</SelectItem>
+   465→              </SelectContent>
+   466→            </Select>
+   467→          </div>
+   468→
+   469→          {/* Пресеты фильтров */}
+   470→          <div className="flex items-end gap-2">
+   471→            <Popover open={presetsOpen} onOpenChange={setPresetsOpen}>
+   472→              <PopoverTrigger asChild>
+   473→                <Button
+   474→                  variant="outline"
+   475→                  className="gap-1.5 border-sky/40 text-brand hover:bg-sky-light"
+   476→                >
+   477→                  <Bookmark className="h-4 w-4" strokeWidth={2} />
+   478→                  Пресеты{presets?.length ? ` · ${presets.length}` : ""}
+   479→                </Button>
+   480→              </PopoverTrigger>
+   481→              <PopoverContent align="start" className="w-72 p-2">
+   482→                {!presets?.length ? (
+   483→                  <p className="p-2 text-xs text-muted-foreground">
+   484→                    Пресетов пока нет — настройте фильтры и сохраните их.
+   485→                  </p>
+   486→                ) : (
+   487→                  <div className="max-h-60 space-y-1 overflow-y-auto">
+   488→                    {presets.map((p) => (
+   489→                      <div
+   490→                        key={p.id}
+   491→                        className="flex items-center gap-1 rounded-lg px-2 py-1.5 transition-colors hover:bg-sky-light/60"
+   492→                      >
+   493→                        <button
+   494→                          type="button"
+   495→                          onClick={() => applyPreset(p)}
+   496→                          className="min-w-0 flex-1 text-left"
+   497→                        >
+   498→                          <span className="block truncate text-sm font-medium text-brand">
+   499→                            {p.name}
+   500→                          </span>
+   501→                          <span className="block text-[11px] text-muted-foreground">
+   502→                            Сохранен {fmtDate(p.createdAt)}
+   503→                          </span>
+   504→                        </button>
+   505→                        <DeleteButton
+   506→                          title={`Удалить пресет «${p.name}»?`}
+   507→                          onConfirm={async () => {
+   508→                            await removePreset.mutateAsync(p.id);
+   509→                          }}
+   510→                        />
+   511→                      </div>
+   512→                    ))}
+   513→                  </div>
+   514→                )}
+   515→              </PopoverContent>
+   516→            </Popover>
+   517→            <Button
+   518→              variant="ghost"
+   519→              className="gap-1.5 text-azure hover:text-azure-dark"
+   520→              onClick={() => setSaveOpen(true)}
+   521→            >
+   522→              <Save className="h-4 w-4" strokeWidth={2} />
+   523→              Сохранить фильтры
+   524→            </Button>
+   525→          </div>
+   526→        </div>
+   527→      </section>
+   528→
+   529→      {/* —— Отчет —— */}
+   530→      <section className="rounded-xl border border-border bg-white p-6 shadow-[0_2px_12px_rgba(25,70,136,0.05)]">
+   531→        <div className="mb-5 flex flex-wrap items-center justify-between gap-3">
+   532→          <div>
+   533→            <h3 className="font-display text-base font-bold text-brand">
+   534→              Отчет по обследованиям
+   535→            </h3>
+   536→            <p className="mt-0.5 text-xs text-muted-foreground">
+   537→              {data
+   538→                ? `Сформирован: ${fmtDateTime(data.generatedAt)}`
+   539→                : "Задайте период и фильтры"}
+   540→            </p>
+   541→          </div>
+   542→          <div className="flex flex-wrap items-center gap-2">
+   543→            {/* Задел этапа 2: колонка «Начисленный бонус» (недоступна на старте) */}
+   544→            <div
+   545→              className="flex items-center gap-2.5 rounded-lg border border-border bg-soft px-3 py-2 opacity-75"
+   546→              title="Функционал этапа 2 — бонусная система"
+   547→            >
+   548→              <Coins className="h-4 w-4 text-sky/70" strokeWidth={2} />
+   549→              <div>
+   550→                <p className="text-[11px] font-medium leading-tight text-muted-foreground">
+   551→                  Колонка «Начисленный бонус»
+   552→                </p>
+   553→                <p className="text-[10px] leading-tight text-muted-foreground/70">
+   554→                  Этап 2 · бонусная система
+   555→                </p>
+   556→              </div>
+   557→              <Switch
+   558→                checked={false}
+   559→                disabled
+   560→                aria-readonly
+   561→                aria-label="Колонка «Начисленный бонус» — этап 2"
+   562→              />
+   563→            </div>
+   564→            <Button
+   565→              variant="outline"
+   566→              onClick={() => doExport("Excel")}
+   567→              disabled={!flatRows.length}
+   568→              className="gap-1.5 border-sky/40 text-brand hover:bg-sky-light"
+   569→            >
+   570→              <FileSpreadsheet className="h-4 w-4 text-azure" strokeWidth={2} /> Excel
+   571→            </Button>
+   572→            <Button
+   573→              onClick={() => doExport("PDF")}
+   574→              disabled={!flatRows.length}
+   575→              className="gap-1.5"
+   576→            >
+   577→              <FileDown className="h-4 w-4" strokeWidth={2} /> PDF
+   578→            </Button>
+   579→          </div>
+   580→        </div>
+   581→
+   582→        {/* Верхний итог */}
+   583→        <div className="mb-5 flex flex-wrap items-center gap-x-8 gap-y-3 rounded-lg bg-soft px-4 py-3">
+   584→          <div>
+   585→            <p className="text-[11px] uppercase tracking-wide text-muted-foreground">
+   586→              Всего заявок
+   587→            </p>
+   588→            <p className="font-display text-2xl font-bold text-brand">{total}</p>
+   589→          </div>
+   590→          <div>
+   591→            <p className="text-[11px] uppercase tracking-wide text-muted-foreground">
+   592→              Выполнено
+   593→            </p>
+   594→            <p className="font-display text-2xl font-bold text-azure-dark">{doneTotal}</p>
+   595→          </div>
+   596→          <Badge className={cn("font-display text-sm", pctBadgeClass(pct(doneTotal, total)))}>
+   597→            {pct(doneTotal, total)}% выполнения
+   598→          </Badge>
+   599→          {reportQuery.isFetching && (
+   600→            <span className="text-xs text-muted-foreground">Обновление…</span>
+   601→          )}
+   602→        </div>
+   603→
+   604→        {reportQuery.error ? (
+   605→          <div className="rounded-xl border border-terra/50 bg-terra-light p-6 text-sm text-brand-dark">
+   606→            Не удалось построить отчет: {(reportQuery.error as Error).message}
+   607→          </div>
+   608→        ) : reportQuery.isLoading || !data ? (
+   609→          <RowsSkeleton rows={6} />
+   610→        ) : data.tree.length === 0 ? (
+   611→          <EmptyState
+   612→            title="Нет заявок за выбранный период"
+   613→            hint="Измените фильтры или расширьте период — данные появятся здесь"
+   614→          />
+   615→        ) : (
+   616→          <div className="max-h-[620px] space-y-3 overflow-y-auto pr-1">
+   617→            {data.tree.map((mp) => (
+   618→              <div key={mp.id} className="overflow-hidden rounded-xl border border-border">
+   619→                {/* Уровень 1: МП */}
+   620→                <GroupRow
+   621→                  icon={UserRound}
+   622→                  label={mp.name}
+   623→                  total={mp.total}
+   624→                  done={mp.done}
+   625→                  depth={0}
+   626→                  open={openMp.has(mp.id)}
+   627→                  onToggle={() => toggleSet(setOpenMp, mp.id)}
+   628→                />
+   629→                {openMp.has(mp.id) &&
+   630→                  (mp.lpus.length === 0 ? (
+   631→                    <div className="border-t border-border/60 bg-soft/40 px-4">
+   632→                      <EmptyState title="У МП нет заявок по фильтрам" className="py-5" />
+   633→                    </div>
+   634→                  ) : (
+   635→                    <div className="space-y-2 border-t border-border/60 bg-soft/40 p-2">
+   636→                      {mp.lpus.map((lpu) => (
+   637→                        <div
+   638→                          key={lpu.id}
+   639→                          className="overflow-hidden rounded-lg border border-border/70 bg-white"
+   640→                        >
+   641→                          {/* Уровень 2: ЛПУ */}
+   642→                          <GroupRow
+   643→                            icon={Building2}
+   644→                            label={lpu.name}
+   645→                            hint={lpu.city}
+   646→                            total={lpu.total}
+   647→                            done={lpu.done}
+   648→                            depth={1}
+   649→                            open={openLpu.has(lpu.id)}
+   650→                            onToggle={() => toggleSet(setOpenLpu, lpu.id)}
+   651→                          />
+   652→                          {openLpu.has(lpu.id) &&
+   653→                            (lpu.doctors.length === 0 ? (
+   654→                              <div className="border-t border-border/60 px-4">
+   655→                                <EmptyState title="Нет заявок по этому ЛПУ" className="py-4" />
+   656→                              </div>
+   657→                            ) : (
+   658→                              <div className="border-t border-border/60">
+   659→                                {lpu.doctors.map((doc) => (
+   660→                                  <div key={doc.id}>
+   661→                                    {/* Уровень 3: НВ */}
+   662→                                    <GroupRow
+   663→                                      icon={Stethoscope}
+   664→                                      label={doc.name}
+   665→                                      total={doc.total}
+   666→                                      done={doc.done}
+   667→                                      depth={2}
+   668→                                      open={openDoc.has(doc.id)}
+   669→                                      onToggle={() => toggleSet(setOpenDoc, doc.id)}
+   670→                                    />
+   671→                                    {/* Уровень 4: детализация заявок */}
+   672→                                    {openDoc.has(doc.id) && <RequestsTable rows={doc.requests} />}
+   673→                                  </div>
+   674→                                ))}
+   675→                              </div>
+   676→                            ))}
+   677→                        </div>
+   678→                      ))}
+   679→                    </div>
+   680→                  ))}
+   681→              </div>
+   682→            ))}
+   683→          </div>
+   684→        )}
+   685→      </section>
+   686→
+   687→      {/* —— Диалог сохранения пресета —— */}
+   688→      <Dialog open={saveOpen} onOpenChange={setSaveOpen}>
+   689→        <DialogContent className="sm:max-w-sm">
+   690→          <DialogHeader>
+   691→            <DialogTitle className="font-display text-brand">
+   692→              Сохранить пресет фильтров
+   693→            </DialogTitle>
+   694→            <DialogDescription>
+   695→              Пресет доступен только вам в списке «Пресеты».
+   696→            </DialogDescription>
+   697→          </DialogHeader>
+   698→          <div className="space-y-1.5 py-2">
+   699→            <Label>Название пресета</Label>
+   700→            <Input
+   701→              value={presetName}
+   702→              onChange={(e) => setPresetName(e.target.value)}
+   703→              placeholder="Например: Квартал · МРТ головы"
+   704→              onKeyDown={(e) => {
+   705→                if (e.key === "Enter" && presetName.trim()) savePreset.mutate();
+   706→              }}
+   707→            />
+   708→            <p className="text-[11px] text-muted-foreground">
+   709→              Сохраняются: период, МП, ЛПУ, НВ, назначение, выполненность.
+   710→            </p>
+   711→          </div>
+   712→          <DialogFooter>
+   713→            <Button variant="outline" onClick={() => setSaveOpen(false)}>
+   714→              Отмена
+   715→            </Button>
+   716→            <Button
+   717→              onClick={() => savePreset.mutate()}
+   718→              disabled={!presetName.trim() || savePreset.isPending}
+   719→            >
+   720→              Сохранить
+   721→            </Button>
+   722→          </DialogFooter>
+   723→        </DialogContent>
+   724→      </Dialog>
+   725→    </div>
+   726→  );
+   727→}
+   728→
+   729→/* ============ Строка-заголовок группы дерева ============ */
+   730→function GroupRow({
+   731→  icon: Icon,
+   732→  label,
+   733→  hint,
+   734→  total,
+   735→  done,
+   736→  depth,
+   737→  open,
+   738→  onToggle,
+   739→}: {
+   740→  icon: React.ElementType;
+   741→  label: string;
+   742→  hint?: string;
+   743→  total: number;
+   744→  done: number;
+   745→  depth: 0 | 1 | 2;
+   746→  open: boolean;
+   747→  onToggle: () => void;
+   748→}) {
+   749→  return (
+   750→    <button
+   751→      type="button"
+   752→      onClick={onToggle}
+   753→      aria-expanded={open}
+   754→      className={cn(
+   755→        "flex w-full items-center gap-2.5 py-2.5 pr-4 text-left transition-colors hover:bg-sky-light/70",
+   756→        depth === 0 && "bg-sky-light/50 px-4",
+   757→        depth === 1 && "bg-white pl-6",
+   758→        depth === 2 && "bg-white pl-10"
+   759→      )}
+   760→    >
+   761→      <ChevronRight
+   762→        className={cn(
+   763→          "h-4 w-4 shrink-0 text-sky transition-transform duration-200",
+   764→          open && "rotate-90"
+   765→        )}
+   766→        strokeWidth={2}
+   767→      />
+   768→      <span
+   769→        className={cn(
+   770→          "inline-flex h-6 w-6 shrink-0 items-center justify-center rounded-md",
+   771→          depth === 0 ? "bg-white text-brand" : "bg-sky-light text-brand"
+   772→        )}
+   773→      >
+   774→        <Icon className="h-3.5 w-3.5" strokeWidth={2} />
+   775→      </span>
+   776→      <span
+   777→        className={cn(
+   778→          "truncate text-brand",
+   779→          depth === 0 ? "font-display text-sm font-bold" : "text-sm font-medium"
+   780→        )}
+   781→      >
+   782→        {label}
+   783→      </span>
+   784→      {hint && <span className="truncate text-xs text-muted-foreground">· {hint}</span>}
+   785→      <span className="ml-auto flex shrink-0 items-center gap-3 text-xs">
+   786→        <span className="text-muted-foreground">
+   787→          Заявок: <span className="font-display font-bold text-brand">{total}</span>
+   788→        </span>
+   789→        <span className="hidden text-muted-foreground sm:inline">
+   790→          Выполнено: <span className="font-display font-bold text-azure-dark">{done}</span>
+   791→        </span>
+   792→        <span
+   793→          className={cn(
+   794→            "rounded-full px-2 py-0.5 font-display text-[10px] font-semibold",
+   795→            pctBadgeClass(pct(done, total))
+   796→          )}
+   797→        >
+   798→          {pct(done, total)}%
+   799→        </span>
+   800→      </span>
+   801→    </button>
+   802→  );
+   803→}
+   804→
+   805→/* ============ Вложенная таблица заявок (детализация) ============ */
+   806→function RequestsTable({ rows }: { rows: ReportRequestRow[] }) {
+   807→  return (
+   808→    <div className="bg-white px-2 pb-2">
+   809→      <div className="max-h-96 overflow-y-auto rounded-lg border border-border/70">
+   810→        <Table>
+   811→          <TableHeader>
+   812→            <TableRow className="bg-soft hover:bg-soft">
+   813→              <TableHead className="h-8 text-[11px]">Дата</TableHead>
+   814→              <TableHead className="h-8 text-[11px]">ФИО пациента</TableHead>
+   815→              <TableHead className="h-8 text-[11px]">Куда</TableHead>
+   816→              <TableHead className="h-8 text-[11px]">Назначено</TableHead>
+   817→              <TableHead className="h-8 text-[11px]">Сделано</TableHead>
+   818→            </TableRow>
+   819→          </TableHeader>
+   820→          <TableBody>
+   821→            {rows.map((r) => (
+   822→              <TableRow key={r.id}>
+   823→                <TableCell className="whitespace-nowrap py-1.5 text-xs">
+   824→                  {fmtDate(r.date)}
+   825→                </TableCell>
+   826→                <TableCell className="py-1.5 text-xs font-medium text-brand">
+   827→                  {r.patientName}
+   828→                </TableCell>
+   829→                <TableCell className="py-1.5 text-xs">{r.destination ?? "—"}</TableCell>
+   830→                <TableCell className="py-1.5 text-xs">{r.assigned ?? "—"}</TableCell>
+   831→                <TableCell className="py-1.5 text-xs">
+   832→                  {r.done ? (
+   833→                    <span className="inline-flex items-center gap-1 text-azure-dark">
+   834→                      <CheckCircle2 className="h-3.5 w-3.5" strokeWidth={2} />
+   835→                      {r.done}
+   836→                    </span>
+   837→                  ) : (
+   838→                    <span className="text-terra-dark">Не выполнено</span>
+   839→                  )}
+   840→                </TableCell>
+   841→              </TableRow>
+   842→            ))}
+   843→          </TableBody>
+   844→        </Table>
+   845→      </div>
+   846→    </div>
+   847→  );
+   848→}
+   849→

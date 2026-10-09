@@ -1,0 +1,1353 @@
+     1→"use client";
+     2→
+     3→import { useMemo, useState } from "react";
+     4→import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+     5→import { useSession } from "next-auth/react";
+     6→import { toast } from "sonner";
+     7→import { api, qs } from "@/lib/api-client";
+     8→import type {
+     9→  City,
+    10→  CityData,
+    11→  CooperationStatus,
+    12→  DoctorCard,
+    13→  DoctorItem,
+    14→  Role,
+    15→  UserBasic,
+    16→  VisitItem,
+    17→} from "@/lib/types";
+    18→import {
+    19→  SectionCard,
+    20→  EmptyState,
+    21→  DeleteButton,
+    22→  RowsSkeleton,
+    23→  StatusChip,
+    24→  fmtDate,
+    25→} from "@/components/shared/ui-bits";
+    26→import { Button } from "@/components/ui/button";
+    27→import { Input } from "@/components/ui/input";
+    28→import { Label } from "@/components/ui/label";
+    29→import { Textarea } from "@/components/ui/textarea";
+    30→import { Checkbox } from "@/components/ui/checkbox";
+    31→import { Badge } from "@/components/ui/badge";
+    32→import { Skeleton } from "@/components/ui/skeleton";
+    33→import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
+    34→import {
+    35→  Dialog,
+    36→  DialogContent,
+    37→  DialogDescription,
+    38→  DialogFooter,
+    39→  DialogHeader,
+    40→  DialogTitle,
+    41→} from "@/components/ui/dialog";
+    42→import {
+    43→  Select,
+    44→  SelectContent,
+    45→  SelectItem,
+    46→  SelectTrigger,
+    47→  SelectValue,
+    48→} from "@/components/ui/select";
+    49→import {
+    50→  Table,
+    51→  TableBody,
+    52→  TableCell,
+    53→  TableHead,
+    54→  TableHeader,
+    55→  TableRow,
+    56→} from "@/components/ui/table";
+    57→import {
+    58→  ArrowRight,
+    59→  Building2,
+    60→  Cake,
+    61→  CalendarDays,
+    62→  CalendarPlus,
+    63→  CheckCircle2,
+    64→  FileText,
+    65→  Gift,
+    66→  Loader2,
+    67→  MapPin,
+    68→  Pencil,
+    69→  Phone,
+    70→  Plus,
+    71→  RotateCcw,
+    72→  Search,
+    73→  UserRound,
+    74→  XCircle,
+    75→} from "lucide-react";
+    76→import { useUiStore } from "@/store/ui";
+    77→import { DictImportExport } from "@/components/shared/dict-io";
+    78→
+    79→/** Пользователь сессии: JWT-колбэк кладет uid и role (типизация next-auth по умолчанию их не знает) */
+    80→type SessionUserWithRole = { uid?: string; role?: Role } | undefined;
+    81→
+    82→const ALL = "__all__";
+    83→const NONE = "__none__";
+    84→
+    85→/** Сегодняшняя дата в формате YYYY-MM-DD (локальная зона) */
+    86→function todayISO(): string {
+    87→  const d = new Date();
+    88→  return new Date(d.getTime() - d.getTimezoneOffset() * 60000).toISOString().slice(0, 10);
+    89→}
+    90→
+    91→/** Редактируемый профиль НВ — общий для DoctorItem и DoctorCard */
+    92→type EditableDoctor = Pick<
+    93→  DoctorItem,
+    94→  "id" | "fullName" | "phone" | "birthDate" | "statusId" | "mpId" | "cityId" | "comment" | "lpus"
+    95→>;
+    96→
+    97→interface DoctorFilters {
+    98→  q: string;
+    99→  mpId: string;
+   100→  statusId: string;
+   101→  lpuId: string;
+   102→  cityId: string;
+   103→}
+   104→
+   105→const emptyFilters: DoctorFilters = { q: "", mpId: "", statusId: "", lpuId: "", cityId: "" };
+   106→
+   107→/* ============================================================
+   108→   Вьюха «Направляющие врачи» — список в стиле 1С
+   109→   ============================================================ */
+   110→export function DoctorsView() {
+   111→  const qc = useQueryClient();
+   112→  const { data: session } = useSession();
+   113→  // Роль из сессии: MP — полный доступ, OPERATOR — добавление и просмотр карточки
+   114→  const isMP = (session?.user as SessionUserWithRole)?.role === "MP";
+   115→
+   116→  const [filters, setFilters] = useState<DoctorFilters>(emptyFilters);
+   117→  const [formOpen, setFormOpen] = useState(false);
+   118→  const [formDoctor, setFormDoctor] = useState<DoctorItem | null>(null);
+   119→  const [cardId, setCardId] = useState<string | null>(null);
+   120→
+   121→  const { data: doctors, isLoading } = useQuery<DoctorItem[]>({
+   122→    queryKey: ["doctors", "list", filters.q, filters.mpId, filters.statusId, filters.lpuId, filters.cityId],
+   123→    queryFn: () =>
+   124→      api.get(
+   125→        `/api/app/doctors${qs({
+   126→          q: filters.q,
+   127→          mpId: filters.mpId,
+   128→          statusId: filters.statusId,
+   129→          lpuId: filters.lpuId,
+   130→          cityId: filters.cityId,
+   131→        })}`
+   132→      ),
+   133→  });
+   134→  const { data: users } = useQuery<UserBasic[]>({
+   135→    queryKey: ["users-basic"],
+   136→    queryFn: () => api.get("/api/app/users?basic=1"),
+   137→  });
+   138→  const { data: statuses } = useQuery<CooperationStatus[]>({
+   139→    queryKey: ["statuses"],
+   140→    queryFn: () => api.get("/api/app/statuses"),
+   141→  });
+   142→  const { data: lpus } = useQuery<CityData[]>({
+   143→    queryKey: ["lpus"],
+   144→    queryFn: () => api.get("/api/app/lpus"),
+   145→  });
+   146→  const { data: cities } = useQuery<City[]>({
+   147→    queryKey: ["cities"],
+   148→    queryFn: () => api.get("/api/app/cities"),
+   149→  });
+   150→
+   151→  const mps = useMemo(() => (users ?? []).filter((u) => u.role === "MP"), [users]);
+   152→
+   153→  // Удаление врача — только МП (кнопка в строке)
+   154→  const removeDoctor = useMutation({
+   155→    mutationFn: (id: string) => api.del(`/api/app/doctors/${id}`),
+   156→    onSuccess: () => {
+   157→      toast.success("Врач удален");
+   158→      qc.invalidateQueries({ queryKey: ["doctors"] });
+   159→      qc.invalidateQueries({ queryKey: ["doctor-card"] });
+   160→      qc.invalidateQueries({ queryKey: ["dashboard"] });
+   161→    },
+   162→    onError: (e: Error) => toast.error(e.message),
+   163→  });
+   164→
+   165→  return (
+   166→    <div className="space-y-4">
+   167→      <SectionCard
+   168→        title="Направляющие врачи (НВ)"
+   169→        description="CRM-база врачей: привязки к ЛПУ, статус сотрудничества, визиты и заявки"
+   170→        action={
+   171→          <div className="flex flex-wrap items-center gap-2">
+   172→            <DictImportExport kind="doctors" />
+   173→            <Button
+   174→              onClick={() => {
+   175→                setFormDoctor(null);
+   176→                setFormOpen(true);
+   177→              }}
+   178→              className="gap-1.5 bg-azure hover:bg-azure-dark"
+   179→            >
+   180→              <Plus className="h-4 w-4" strokeWidth={2} /> Добавить врача
+   181→            </Button>
+   182→          </div>
+   183→        }
+   184→      >
+   185→        <div className="space-y-5">
+   186→          {/* Панель фильтров */}
+   187→          <div className="flex flex-wrap items-end gap-3">
+   188→            <div className="space-y-1.5">
+   189→              <Label className="text-xs text-muted-foreground">Поиск по ФИО</Label>
+   190→              <div className="relative">
+   191→                <Search
+   192→                  className="absolute left-2.5 top-1/2 h-4 w-4 -translate-y-1/2 text-sky"
+   193→                  strokeWidth={2}
+   194→                />
+   195→                <Input
+   196→                  value={filters.q}
+   197→                  onChange={(e) => setFilters((f) => ({ ...f, q: e.target.value }))}
+   198→                  placeholder="Фамилия врача…"
+   199→                  className="w-52 bg-white pl-8"
+   200→                />
+   201→              </div>
+   202→            </div>
+   203→            <FilterSelect
+   204→              label="Курирующий МП"
+   205→              value={filters.mpId}
+   206→              onChange={(v) => setFilters((f) => ({ ...f, mpId: v }))}
+   207→              placeholder="Все МП"
+   208→              items={mps.map((m) => ({ value: m.id, label: m.name }))}
+   209→            />
+   210→            <FilterSelect
+   211→              label="Статус сотрудничества"
+   212→              value={filters.statusId}
+   213→              onChange={(v) => setFilters((f) => ({ ...f, statusId: v }))}
+   214→              placeholder="Все статусы"
+   215→              items={(statuses ?? []).map((s) => ({ value: s.id, label: s.name }))}
+   216→            />
+   217→            <FilterSelect
+   218→              label="ЛПУ"
+   219→              value={filters.lpuId}
+   220→              onChange={(v) => setFilters((f) => ({ ...f, lpuId: v }))}
+   221→              placeholder="Все ЛПУ"
+   222→              items={(lpus ?? []).map((l) => ({ value: l.id, label: l.name }))}
+   223→            />
+   224→            <FilterSelect
+   225→              label="Город"
+   226→              value={filters.cityId}
+   227→              onChange={(v) => setFilters((f) => ({ ...f, cityId: v }))}
+   228→              placeholder="Все города"
+   229→              items={(cities ?? []).map((c) => ({ value: c.id, label: c.name }))}
+   230→            />
+   231→            <Button
+   232→              variant="ghost"
+   233→              size="sm"
+   234→              className="gap-1.5 text-sky hover:text-brand"
+   235→              onClick={() => setFilters(emptyFilters)}
+   236→            >
+   237→              <RotateCcw className="h-3.5 w-3.5" strokeWidth={2} /> Сбросить
+   238→            </Button>
+   239→          </div>
+   240→
+   241→          {/* Список НВ — таблица в стиле 1С */}
+   242→          {isLoading ? (
+   243→            <RowsSkeleton rows={6} />
+   244→          ) : !doctors?.length ? (
+   245→            <EmptyState
+   246→              title="Врачи не найдены"
+   247→              hint="Измените параметры фильтра или добавьте нового направляющего врача"
+   248→            />
+   249→          ) : (
+   250→            <>
+   251→              <p className="text-xs text-muted-foreground">Найдено: {doctors.length}</p>
+   252→              <div className="onec-window">
+   253→                <div className="max-h-96 overflow-y-auto">
+   254→                  <table className="onec-table">
+   255→                    <thead>
+   256→                      <tr>
+   257→                        <th>ФИО</th>
+   258→                        <th>Статус</th>
+   259→                        <th>МП</th>
+   260→                        <th>ЛПУ</th>
+   261→                        <th>Город</th>
+   262→                        <th>Телефон</th>
+   263→                        <th className="text-center">Заявки</th>
+   264→                        <th className="text-center">Визиты</th>
+   265→                        <th>Действия</th>
+   266→                      </tr>
+   267→                    </thead>
+   268→                    <tbody>
+   269→                      {doctors.map((d) => (
+   270→                        <DoctorTableRow
+   271→                          key={d.id}
+   272→                          doctor={d}
+   273→                          canManage={isMP}
+   274→                          onOpenCard={() => setCardId(d.id)}
+   275→                          onEdit={() => {
+   276→                            setFormDoctor(d);
+   277→                            setFormOpen(true);
+   278→                          }}
+   279→                          onDelete={async () => {
+   280→                            try {
+   281→                              await removeDoctor.mutateAsync(d.id);
+   282→                            } catch (e) {
+   283→                              toast.error((e as Error).message);
+   284→                            }
+   285→                          }}
+   286→                        />
+   287→                      ))}
+   288→                    </tbody>
+   289→                  </table>
+   290→                </div>
+   291→              </div>
+   292→            </>
+   293→          )}
+   294→        </div>
+   295→      </SectionCard>
+   296→
+   297→      {/* Диалог создания / редактирования врача (монтируется при открытии — форма инициализируется заново) */}
+   298→      {formOpen && <DoctorFormDialog doctor={formDoctor} onOpenChange={setFormOpen} />}
+   299→
+   300→      {/* CRM-карточка врача */}
+   301→      {cardId && (
+   302→        <DoctorCardDialog doctorId={cardId} onOpenChange={(o) => { if (!o) setCardId(null); }} />
+   303→      )}
+   304→    </div>
+   305→  );
+   306→}
+   307→export default DoctorsView;
+   308→
+   309→/* ============================================================
+   310→   Строка списка НВ (1С-таблица)
+   311→   ============================================================ */
+   312→function DoctorTableRow({
+   313→  doctor,
+   314→  canManage,
+   315→  onOpenCard,
+   316→  onEdit,
+   317→  onDelete,
+   318→}: {
+   319→  doctor: DoctorItem;
+   320→  canManage: boolean;
+   321→  onOpenCard: () => void;
+   322→  onEdit: () => void;
+   323→  onDelete: () => Promise<void>;
+   324→}) {
+   325→  return (
+   326→    <tr>
+   327→      <td>
+   328→        {/* Переход в CRM-карточку — по клику на ФИО */}
+   329→        <button
+   330→          type="button"
+   331→          onClick={onOpenCard}
+   332→          className="font-medium text-azure hover:underline"
+   333→          title="Открыть карточку врача"
+   334→        >
+   335→          {doctor.fullName}
+   336→        </button>
+   337→      </td>
+   338→      <td>
+   339→        {doctor.status ? (
+   340→          <StatusPill status={doctor.status} />
+   341→        ) : (
+   342→          <span className="text-xs italic text-muted-foreground">—</span>
+   343→        )}
+   344→      </td>
+   345→      <td className="whitespace-nowrap">{doctor.mp?.name ?? "—"}</td>
+   346→      <td>
+   347→        <LpuChips lpus={doctor.lpus} />
+   348→      </td>
+   349→      <td className="whitespace-nowrap">{doctor.city?.name ?? "—"}</td>
+   350→      <td className="whitespace-nowrap text-muted-foreground">{doctor.phone ?? "—"}</td>
+   351→      <td className="text-center">
+   352→        <Badge
+   353→          variant="outline"
+   354→          className="gap-1 border-border bg-white text-[11px] font-medium text-brand"
+   355→          title="Заявок"
+   356→        >
+   357→          <FileText className="h-3 w-3 text-sky" strokeWidth={2} />
+   358→          {doctor._count.requests}
+   359→        </Badge>
+   360→      </td>
+   361→      <td className="text-center">
+   362→        <Badge
+   363→          variant="outline"
+   364→          className="gap-1 border-border bg-white text-[11px] font-medium text-brand"
+   365→          title="Визитов"
+   366→        >
+   367→          <CalendarDays className="h-3 w-3 text-sky" strokeWidth={2} />
+   368→          {doctor._count.visits}
+   369→        </Badge>
+   370→      </td>
+   371→      <td>
+   372→        {canManage ? (
+   373→          <div className="flex items-center gap-1">
+   374→            <Button
+   375→              variant="ghost"
+   376→              size="icon"
+   377→              className="h-8 w-8 text-sky hover:text-brand"
+   378→              onClick={onEdit}
+   379→              aria-label={`Редактировать врача ${doctor.fullName}`}
+   380→              title="Редактировать"
+   381→            >
+   382→              <Pencil className="h-4 w-4" strokeWidth={2} />
+   383→            </Button>
+   384→            <DeleteButton
+   385→              title={`Удалить врача «${doctor.fullName}»?`}
+   386→              description="Будут удалены карточка врача, привязки к ЛПУ, визиты и заявки. Действие будет зафиксировано в журнале аудита."
+   387→              onConfirm={onDelete}
+   388→            />
+   389→          </div>
+   390→        ) : (
+   391→          <span className="text-xs italic text-muted-foreground">—</span>
+   392→        )}
+   393→      </td>
+   394→    </tr>
+   395→  );
+   396→}
+   397→
+   398→/** Чипы ЛПУ: показываются первые 2, остальные — «+N» (полный список в подсказке) */
+   399→function LpuChips({ lpus }: { lpus: DoctorItem["lpus"] }) {
+   400→  if (!lpus.length) {
+   401→    return <span className="text-xs italic text-muted-foreground">—</span>;
+   402→  }
+   403→  const visible = lpus.slice(0, 2);
+   404→  const hidden = lpus.slice(2);
+   405→  return (
+   406→    <div className="flex max-w-[230px] flex-wrap gap-1">
+   407→      {visible.map(({ lpu }) => (
+   408→        <span
+   409→          key={lpu.id}
+   410→          className="inline-flex items-center gap-1 rounded-full bg-sky-light px-2 py-0.5 text-[11px] text-brand"
+   411→          title={`${lpu.city.name}${lpu.address ? `, ${lpu.address}` : ""}`}
+   412→        >
+   413→          <Building2 className="h-3 w-3 text-sky" strokeWidth={2} />
+   414→          {lpu.name}
+   415→        </span>
+   416→      ))}
+   417→      {hidden.length > 0 && (
+   418→        <span
+   419→          className="inline-flex items-center rounded-full border border-border bg-white px-1.5 py-0.5 text-[11px] font-medium text-brand"
+   420→          title={hidden.map(({ lpu }) => lpu.name).join(", ")}
+   421→        >
+   422→          +{hidden.length}
+   423→        </span>
+   424→      )}
+   425→    </div>
+   426→  );
+   427→}
+   428→
+   429→/* ============================================================
+   430→   Диалог создания / редактирования врача
+   431→   ============================================================ */
+   432→interface DoctorFormState {
+   433→  fullName: string;
+   434→  phone: string;
+   435→  birthDate: string;
+   436→  statusId: string;
+   437→  mpId: string;
+   438→  cityId: string;
+   439→  lpuIds: string[];
+   440→  comment: string;
+   441→}
+   442→
+   443→const emptyDoctorForm: DoctorFormState = {
+   444→  fullName: "",
+   445→  phone: "",
+   446→  birthDate: "",
+   447→  statusId: NONE,
+   448→  mpId: "",
+   449→  cityId: NONE,
+   450→  lpuIds: [],
+   451→  comment: "",
+   452→};
+   453→
+   454→/**
+   455→ * Начальное состояние формы: из карточки при редактировании / пустая при создании.
+   456→ * Для МП при создании врач по умолчанию закрепляется за текущим пользователем.
+   457→ */
+   458→function initDoctorForm(doctor: EditableDoctor | null, isMP: boolean, sessionUid?: string): DoctorFormState {
+   459→  if (!doctor) {
+   460→    return { ...emptyDoctorForm, mpId: isMP && sessionUid ? sessionUid : "" };
+   461→  }
+   462→  return {
+   463→    fullName: doctor.fullName,
+   464→    phone: doctor.phone ?? "",
+   465→    birthDate: doctor.birthDate ? doctor.birthDate.slice(0, 10) : "",
+   466→    statusId: doctor.statusId ?? NONE,
+   467→    mpId: doctor.mpId ?? NONE, // null → «— Без МП —» (НВ без куратора)
+   468→    cityId: doctor.cityId ?? NONE,
+   469→    lpuIds: doctor.lpus?.map((x) => x.lpu.id) ?? [],
+   470→    comment: doctor.comment ?? "",
+   471→  };
+   472→}
+   473→
+   474→function DoctorFormDialog({
+   475→  onOpenChange,
+   476→  doctor,
+   477→}: {
+   478→  onOpenChange: (o: boolean) => void;
+   479→  doctor: EditableDoctor | null;
+   480→}) {
+   481→  const qc = useQueryClient();
+   482→  const { data: session } = useSession();
+   483→  const isMP = (session?.user as SessionUserWithRole)?.role === "MP";
+   484→  const [form, setForm] = useState<DoctorFormState>(() =>
+   485→    initDoctorForm(doctor, isMP, (session?.user as SessionUserWithRole)?.uid)
+   486→  );
+   487→
+   488→  const { data: users } = useQuery<UserBasic[]>({
+   489→    queryKey: ["users-basic"],
+   490→    queryFn: () => api.get("/api/app/users?basic=1"),
+   491→  });
+   492→  const { data: statuses } = useQuery<CooperationStatus[]>({
+   493→    queryKey: ["statuses"],
+   494→    queryFn: () => api.get("/api/app/statuses"),
+   495→  });
+   496→  const { data: cities } = useQuery<City[]>({
+   497→    queryKey: ["cities"],
+   498→    queryFn: () => api.get("/api/app/cities"),
+   499→  });
+   500→  const { data: lpus } = useQuery<CityData[]>({
+   501→    queryKey: ["lpus"],
+   502→    queryFn: () => api.get("/api/app/lpus"),
+   503→  });
+   504→
+   505→  const mps = useMemo(() => (users ?? []).filter((u) => u.role === "MP"), [users]);
+   506→
+   507→  /** Переключение ЛПУ; автоподстановка города первого ЛПУ, если город не указан */
+   508→  function toggleLpu(id: string, checked: boolean) {
+   509→    setForm((f) => {
+   510→      const lpuIds = checked ? [...f.lpuIds, id] : f.lpuIds.filter((x) => x !== id);
+   511→      let cityId = f.cityId;
+   512→      if (checked && cityId === NONE && lpuIds.length > 0) {
+   513→        const first = lpus?.find((l) => l.id === lpuIds[0]);
+   514→        if (first) cityId = first.city.id;
+   515→      }
+   516→      return { ...f, lpuIds, cityId };
+   517→    });
+   518→  }
+   519→
+   520→  const save = useMutation({
+   521→    mutationFn: () => {
+   522→      const body: Record<string, unknown> = {
+   523→        fullName: form.fullName.trim(),
+   524→        phone: form.phone.trim() || null,
+   525→        birthDate: form.birthDate || null,
+   526→        statusId: form.statusId === NONE ? null : form.statusId,
+   527→        cityId: form.cityId === NONE ? null : form.cityId,
+   528→        lpuIds: form.lpuIds,
+   529→        comment: form.comment.trim() || null,
+   530→      };
+   531→      // mpId передается только ролью МП: оператор создает НВ без куратора,
+   532→      // МП закрепится позднее. Пустое значение при редактировании = открепить МП.
+   533→      if (isMP) body.mpId = form.mpId === NONE ? "" : form.mpId;
+   534→      return doctor ? api.put(`/api/app/doctors/${doctor.id}`, body) : api.post("/api/app/doctors", body);
+   535→    },
+   536→    onSuccess: () => {
+   537→      toast.success(doctor ? "Карточка врача обновлена" : "Врач добавлен");
+   538→      qc.invalidateQueries({ queryKey: ["doctors"] });
+   539→      qc.invalidateQueries({ queryKey: ["doctor-card"] });
+   540→      qc.invalidateQueries({ queryKey: ["dashboard"] });
+   541→      onOpenChange(false);
+   542→    },
+   543→    onError: (e: Error) => toast.error(e.message),
+   544→  });
+   545→
+   546→  return (
+   547→    <Dialog open onOpenChange={onOpenChange}>
+   548→      <DialogContent className="max-h-[calc(100dvh-4rem)] overflow-y-auto sm:max-w-2xl">
+   549→        <DialogHeader>
+   550→          <DialogTitle className="font-display text-brand">
+   551→            {doctor ? "Редактирование врача" : "Новый направляющий врач"}
+   552→          </DialogTitle>
+   553→          <DialogDescription>
+   554→            {isMP
+   555→              ? "Карточка НВ — ключевая сущность CRM: статус, курирующий МП и привязки к ЛПУ"
+   556→              : "Обязательное поле — только ФИО; МП закрепит врача за собой позднее"}
+   557→          </DialogDescription>
+   558→        </DialogHeader>
+   559→
+   560→        <div className="grid gap-4 py-1 md:grid-cols-2">
+   561→          <div className="space-y-1.5">
+   562→            <Label>
+   563→              ФИО <span className="text-terra-dark">*</span>
+   564→            </Label>
+   565→            <Input
+   566→              value={form.fullName}
+   567→              onChange={(e) => setForm({ ...form, fullName: e.target.value })}
+   568→              placeholder="Иванова Анна Петровна"
+   569→            />
+   570→          </div>
+   571→          <div className="space-y-1.5">
+   572→            <Label>Телефон</Label>
+   573→            <Input
+   574→              type="tel"
+   575→              value={form.phone}
+   576→              onChange={(e) => setForm({ ...form, phone: e.target.value })}
+   577→              placeholder="+7 (___) ___-__-__"
+   578→            />
+   579→          </div>
+   580→          <div className="space-y-1.5">
+   581→            <Label>Дата рождения</Label>
+   582→            <Input
+   583→              type="date"
+   584→              value={form.birthDate}
+   585→              onChange={(e) => setForm({ ...form, birthDate: e.target.value })}
+   586→            />
+   587→          </div>
+   588→          <div className="space-y-1.5">
+   589→            <Label>Статус сотрудничества</Label>
+   590→            <Select value={form.statusId} onValueChange={(v) => setForm({ ...form, statusId: v })}>
+   591→              <SelectTrigger className="bg-white">
+   592→                <SelectValue placeholder="Выберите статус" />
+   593→              </SelectTrigger>
+   594→              <SelectContent>
+   595→                <SelectItem value={NONE}>Не указан</SelectItem>
+   596→                {(statuses ?? []).map((s) => (
+   597→                  <SelectItem key={s.id} value={s.id}>
+   598→                    {s.name}
+   599→                  </SelectItem>
+   600→                ))}
+   601→              </SelectContent>
+   602→            </Select>
+   603→          </div>
+   604→
+   605→          {/* Курирующий МП: у оператора поле неактивно и не отправляется */}
+   606→          <div className="space-y-1.5">
+   607→            <Label>
+   608→              Курирующий МП
+   609→              {isMP && !doctor && <span className="text-terra-dark"> *</span>}
+   610→            </Label>
+   611→            {isMP ? (
+   612→              <>
+   613→                <Select value={form.mpId} onValueChange={(v) => setForm({ ...form, mpId: v })}>
+   614→                  <SelectTrigger className="bg-white">
+   615→                    <SelectValue placeholder="Выберите МП" />
+   616→                  </SelectTrigger>
+   617→                  <SelectContent>
+   618→                    {doctor && <SelectItem value={NONE}>— Без МП —</SelectItem>}
+   619→                    {mps.map((m) => (
+   620→                      <SelectItem key={m.id} value={m.id}>
+   621→                        {m.name}
+   622→                      </SelectItem>
+   623→                    ))}
+   624→                  </SelectContent>
+   625→                </Select>
+   626→                {doctor && (
+   627→                  <p className="text-[11px] text-muted-foreground">
+   628→                    «— Без МП —» — открепить курирующего МП (врач останется без куратора)
+   629→                  </p>
+   630→                )}
+   631→              </>
+   632→            ) : (
+   633→              <>
+   634→                <Input
+   635→                  disabled
+   636→                  readOnly
+   637→                  value=""
+   638→                  placeholder="Не назначен"
+   639→                  className="bg-white text-muted-foreground"
+   640→                />
+   641→                <p className="text-[11px] text-muted-foreground">
+   642→                  Будет закреплен МП позднее
+   643→                </p>
+   644→              </>
+   645→            )}
+   646→          </div>
+   647→
+   648→          <div className="space-y-1.5">
+   649→            <Label>Город</Label>
+   650→            <Select value={form.cityId} onValueChange={(v) => setForm({ ...form, cityId: v })}>
+   651→              <SelectTrigger className="bg-white">
+   652→                <SelectValue placeholder="Не указан" />
+   653→              </SelectTrigger>
+   654→              <SelectContent>
+   655→                <SelectItem value={NONE}>Не указан</SelectItem>
+   656→                {(cities ?? []).map((c) => (
+   657→                  <SelectItem key={c.id} value={c.id}>
+   658→                    {c.name}
+   659→                  </SelectItem>
+   660→                ))}
+   661→              </SelectContent>
+   662→            </Select>
+   663→          </div>
+   664→
+   665→          {/* Множественный выбор ЛПУ */}
+   666→          <div className="space-y-1.5 md:col-span-2">
+   667→            <div className="flex items-center justify-between">
+   668→              <Label>Привязка к ЛПУ</Label>
+   669→              <span className="text-[11px] text-muted-foreground">Выбрано: {form.lpuIds.length}</span>
+   670→            </div>
+   671→            <div className="max-h-48 space-y-1 overflow-y-auto rounded-lg border border-border bg-white p-3">
+   672→              {!lpus?.length ? (
+   673→                <p className="py-2 text-center text-xs text-muted-foreground">
+   674→                  Сначала добавьте ЛПУ в разделе «Справочники»
+   675→                </p>
+   676→              ) : (
+   677→                lpus.map((l) => (
+   678→                  <label
+   679→                    key={l.id}
+   680→                    className="flex cursor-pointer items-center gap-2.5 rounded-md px-2 py-1.5 hover:bg-sky-light/60"
+   681→                  >
+   682→                    <Checkbox
+   683→                      checked={form.lpuIds.includes(l.id)}
+   684→                      onCheckedChange={(c) => toggleLpu(l.id, c === true)}
+   685→                      aria-label={`Привязать ${l.name}`}
+   686→                    />
+   687→                    <span className="text-sm text-brand">{l.name}</span>
+   688→                    <span className="text-xs text-muted-foreground">· {l.city.name}</span>
+   689→                  </label>
+   690→                ))
+   691→              )}
+   692→            </div>
+   693→            <p className="text-[11px] text-muted-foreground">
+   694→              При выборе ЛПУ и незаполненном городе подставляется город первого ЛПУ
+   695→            </p>
+   696→          </div>
+   697→
+   698→          <div className="space-y-1.5 md:col-span-2">
+   699→            <Label>Комментарий</Label>
+   700→            <Textarea
+   701→              rows={2}
+   702→              value={form.comment}
+   703→              onChange={(e) => setForm({ ...form, comment: e.target.value })}
+   704→              placeholder="Особенности сотрудничества, заметки…"
+   705→            />
+   706→          </div>
+   707→        </div>
+   708→
+   709→        <DialogFooter>
+   710→          <Button variant="outline" onClick={() => onOpenChange(false)}>
+   711→            Отмена
+   712→          </Button>
+   713→          <Button
+   714→            onClick={() => save.mutate()}
+   715→            disabled={!form.fullName.trim() || (isMP && !doctor && !form.mpId) || save.isPending}
+   716→            className="bg-azure hover:bg-azure-dark"
+   717→          >
+   718→            {save.isPending && <Loader2 className="h-4 w-4 animate-spin" strokeWidth={2} />}
+   719→            {doctor ? "Сохранить" : "Добавить врача"}
+   720→          </Button>
+   721→        </DialogFooter>
+   722→      </DialogContent>
+   723→    </Dialog>
+   724→  );
+   725→}
+   726→
+   727→/* ============================================================
+   728→   CRM-карточка врача (большой диалог)
+   729→   ============================================================ */
+   730→interface VisitFormState {
+   731→  date: string;
+   732→  purpose: string;
+   733→  comment: string;
+   734→  lpuId: string;
+   735→}
+   736→
+   737→function DoctorCardDialog({
+   738→  doctorId,
+   739→  onOpenChange,
+   740→}: {
+   741→  doctorId: string;
+   742→  onOpenChange: (o: boolean) => void;
+   743→}) {
+   744→  const qc = useQueryClient();
+   745→  const { data: session } = useSession();
+   746→  const isMP = (session?.user as SessionUserWithRole)?.role === "MP";
+   747→  const { setActiveView } = useUiStore();
+   748→  const [editOpen, setEditOpen] = useState(false);
+   749→  const [visitFormOpen, setVisitFormOpen] = useState(false);
+   750→  const [visitForm, setVisitForm] = useState<VisitFormState>({
+   751→    date: todayISO(),
+   752→    purpose: "",
+   753→    comment: "",
+   754→    lpuId: NONE,
+   755→  });
+   756→
+   757→  const { data: card, isLoading } = useQuery<DoctorCard>({
+   758→    queryKey: ["doctor-card", doctorId],
+   759→    queryFn: () => api.get(`/api/app/doctors/${doctorId}`),
+   760→  });
+   761→
+   762→  // Удаление врача — только МП
+   763→  const removeDoctor = useMutation({
+   764→    mutationFn: (id: string) => api.del(`/api/app/doctors/${id}`),
+   765→    onSuccess: () => {
+   766→      toast.success("Врач удален");
+   767→      onOpenChange(false);
+   768→      qc.invalidateQueries({ queryKey: ["doctors"] });
+   769→      qc.invalidateQueries({ queryKey: ["doctor-card"] });
+   770→      qc.invalidateQueries({ queryKey: ["dashboard"] });
+   771→    },
+   772→  });
+   773→
+   774→  // Запланировать визит
+   775→  const addVisit = useMutation({
+   776→    mutationFn: () =>
+   777→      api.post("/api/app/visits", {
+   778→        doctorId,
+   779→        lpuId: visitForm.lpuId === NONE ? null : visitForm.lpuId,
+   780→        date: visitForm.date,
+   781→        purpose: visitForm.purpose.trim(),
+   782→        comment: visitForm.comment.trim() || null,
+   783→        status: "PLANNED",
+   784→      }),
+   785→    onSuccess: () => {
+   786→      toast.success("Визит запланирован");
+   787→      setVisitFormOpen(false);
+   788→      setVisitForm({ date: todayISO(), purpose: "", comment: "", lpuId: NONE });
+   789→      qc.invalidateQueries({ queryKey: ["doctor-card"] });
+   790→      qc.invalidateQueries({ queryKey: ["visits"] });
+   791→      qc.invalidateQueries({ queryKey: ["dashboard"] });
+   792→    },
+   793→    onError: (e: Error) => toast.error(e.message),
+   794→  });
+   795→
+   796→  // Смена статуса визита
+   797→  const setVisitStatus = useMutation({
+   798→    mutationFn: ({ id, status }: { id: string; status: VisitItem["status"] }) =>
+   799→      api.put(`/api/app/visits/${id}`, { status }),
+   800→    onSuccess: () => {
+   801→      toast.success("Статус визита обновлен");
+   802→      qc.invalidateQueries({ queryKey: ["doctor-card"] });
+   803→      qc.invalidateQueries({ queryKey: ["visits"] });
+   804→      qc.invalidateQueries({ queryKey: ["dashboard"] });
+   805→    },
+   806→    onError: (e: Error) => toast.error(e.message),
+   807→  });
+   808→
+   809→  // Удаление визита — только МП
+   810→  const removeVisit = useMutation({
+   811→    mutationFn: (id: string) => api.del(`/api/app/visits/${id}`),
+   812→    onSuccess: () => {
+   813→      toast.success("Визит удален");
+   814→      qc.invalidateQueries({ queryKey: ["doctor-card"] });
+   815→      qc.invalidateQueries({ queryKey: ["visits"] });
+   816→      qc.invalidateQueries({ queryKey: ["dashboard"] });
+   817→    },
+   818→  });
+   819→
+   820→  const doneCount = card?.requests.filter((r) => r.doneId != null).length ?? 0;
+   821→
+   822→  const nextVisit = useMemo(() => {
+   823→    if (!card) return null;
+   824→    const start = new Date();
+   825→    start.setHours(0, 0, 0, 0);
+   826→    return (
+   827→      [...card.visits]
+   828→        .filter((v) => v.status === "PLANNED" && new Date(v.date) >= start)
+   829→        .sort((a, b) => +new Date(a.date) - +new Date(b.date))[0] ?? null
+   830→    );
+   831→  }, [card]);
+   832→
+   833→  const sortedVisits = useMemo(
+   834→    () => (card ? [...card.visits].sort((a, b) => +new Date(b.date) - +new Date(a.date)) : []),
+   835→    [card]
+   836→  );
+   837→
+   838→  return (
+   839→    <>
+   840→      <Dialog open onOpenChange={onOpenChange}>
+   841→        <DialogContent className="max-h-[85vh] overflow-y-auto sm:max-w-4xl">
+   842→          <DialogHeader>
+   843→            <div className="flex items-start justify-between gap-3">
+   844→              <div className="min-w-0 space-y-1">
+   845→                <DialogTitle className="flex flex-wrap items-center gap-2 font-display text-lg text-brand">
+   846→                  <span className="truncate">{card?.fullName ?? "Карточка врача"}</span>
+   847→                  {card?.status && <StatusPill status={card.status} />}
+   848→                </DialogTitle>
+   849→                <DialogDescription className="flex flex-wrap items-center gap-x-4 gap-y-1 text-xs">
+   850→                  <span className="inline-flex items-center gap-1">
+   851→                    <UserRound className="h-3 w-3 text-sky" strokeWidth={2} />
+   852→                    МП: {card?.mp?.name ?? "—"}
+   853→                  </span>
+   854→                  <span className="inline-flex items-center gap-1">
+   855→                    <Phone className="h-3 w-3 text-sky" strokeWidth={2} />
+   856→                    {card?.phone ?? "—"}
+   857→                  </span>
+   858→                  <span className="inline-flex items-center gap-1">
+   859→                    <Cake className="h-3 w-3 text-sky" strokeWidth={2} />
+   860→                    {card?.birthDate ? fmtDate(card.birthDate) : "дата рождения не указана"}
+   861→                  </span>
+   862→                  <span className="inline-flex items-center gap-1">
+   863→                    <MapPin className="h-3 w-3 text-sky" strokeWidth={2} />
+   864→                    {card?.city?.name ?? "город не указан"}
+   865→                  </span>
+   866→                </DialogDescription>
+   867→              </div>
+   868→              {isMP && card && (
+   869→                <DeleteButton
+   870→                  title={`Удалить врача «${card.fullName}»?`}
+   871→                  description="Будут удалены карточка врача, привязки к ЛПУ, визиты и заявки. Действие будет зафиксировано в журнале аудита."
+   872→                  onConfirm={async () => {
+   873→                    try {
+   874→                      await removeDoctor.mutateAsync(card.id);
+   875→                    } catch (e) {
+   876→                      toast.error((e as Error).message);
+   877→                    }
+   878→                  }}
+   879→                />
+   880→              )}
+   881→            </div>
+   882→          </DialogHeader>
+   883→
+   884→          {isLoading || !card ? (
+   885→            <div className="space-y-3 py-4">
+   886→              <Skeleton className="h-20 rounded-lg" />
+   887→              <Skeleton className="h-40 rounded-lg" />
+   888→            </div>
+   889→          ) : (
+   890→            <>
+   891→              {/* Quick-stats */}
+   892→              <div className="grid grid-cols-3 gap-3">
+   893→                <StatBox
+   894→                  icon={<FileText className="h-3.5 w-3.5 text-sky" strokeWidth={2} />}
+   895→                  label="Всего заявок"
+   896→                  value={card.requests.length}
+   897→                />
+   898→                <StatBox
+   899→                  icon={<CheckCircle2 className="h-3.5 w-3.5 text-sky" strokeWidth={2} />}
+   900→                  label="Выполнено"
+   901→                  value={doneCount}
+   902→                />
+   903→                <StatBox
+   904→                  icon={<CalendarDays className="h-3.5 w-3.5 text-sky" strokeWidth={2} />}
+   905→                  label="Ближайший визит"
+   906→                  value={nextVisit ? fmtDate(nextVisit.date) : "—"}
+   907→                />
+   908→              </div>
+   909→
+   910→              <Tabs defaultValue="profile" className="mt-1">
+   911→                <TabsList className="h-10 bg-sky-light/60">
+   912→                  <TabsTrigger value="profile" className="px-4">Профиль и привязки</TabsTrigger>
+   913→                  <TabsTrigger value="visits" className="px-4">Визиты и коммуникации</TabsTrigger>
+   914→                  <TabsTrigger value="requests" className="px-4">Заявки ({card.requests.length})</TabsTrigger>
+   915→                </TabsList>
+   916→
+   917→                {/* —— Вкладка: Профиль и привязки —— */}
+   918→                <TabsContent value="profile" className="mt-4 space-y-5">
+   919→                  <div className="grid gap-x-6 gap-y-3 sm:grid-cols-2">
+   920→                    <Field label="ФИО" value={card.fullName} />
+   921→                    <Field label="Телефон" value={card.phone ?? "—"} />
+   922→                    <Field label="Дата рождения" value={card.birthDate ? fmtDate(card.birthDate) : "—"} />
+   923→                    <Field label="Город" value={card.city?.name ?? "—"} />
+   924→                    <Field
+   925→                      label="Курирующий МП"
+   926→                      value={
+   927→                        card.mp ? (
+   928→                          card.mp.name
+   929→                        ) : (
+   930→                          <Badge
+   931→                            variant="outline"
+   932→                            className="border-terra/50 bg-terra-light text-[10px] text-terra-dark"
+   933→                          >
+   934→                            Не закреплен
+   935→                          </Badge>
+   936→                        )
+   937→                      }
+   938→                    />
+   939→                    <Field label="Статус сотрудничества" value={card.status?.name ?? "—"} />
+   940→                    <Field
+   941→                      label="Комментарий"
+   942→                      value={card.comment ?? "—"}
+   943→                      className="sm:col-span-2"
+   944→                    />
+   945→                  </div>
+   946→
+   947→                  <div>
+   948→                    <div className="mb-2 flex items-center justify-between">
+   949→                      <p className="text-sm font-semibold text-brand">Привязки к ЛПУ</p>
+   950→                      {/* Редактирование карточки — только МП */}
+   951→                      {isMP && (
+   952→                        <Button
+   953→                          size="sm"
+   954→                          variant="outline"
+   955→                          className="gap-1.5 border-azure/40 text-azure hover:bg-azure hover:text-white"
+   956→                          onClick={() => setEditOpen(true)}
+   957→                        >
+   958→                          <Pencil className="h-3.5 w-3.5" strokeWidth={2} /> Редактировать
+   959→                        </Button>
+   960→                      )}
+   961→                    </div>
+   962→                    <div className="flex flex-wrap gap-1.5">
+   963→                      {card.lpus.length === 0 ? (
+   964→                        <span className="text-xs italic text-muted-foreground">
+   965→                          {isMP ? "ЛПУ не привязаны — нажмите «Редактировать»" : "ЛПУ не привязаны"}
+   966→                        </span>
+   967→                      ) : (
+   968→                        card.lpus.map(({ lpu }) => (
+   969→                          <span
+   970→                            key={lpu.id}
+   971→                            className="inline-flex items-center gap-1 rounded-full bg-sky-light px-2.5 py-1 text-xs text-brand"
+   972→                          >
+   973→                            <Building2 className="h-3 w-3 text-sky" strokeWidth={2} />
+   974→                            {lpu.name}
+   975→                            <span className="text-muted-foreground">· {lpu.city.name}</span>
+   976→                          </span>
+   977→                        ))
+   978→                      )}
+   979→                    </div>
+   980→                  </div>
+   981→
+   982→                  {/* Задел этапа 2: бонусная программа */}
+   983→                  <div className="placeholder-section rounded-xl border-2 border-dashed border-sky/50 bg-soft p-5">
+   984→                    <div className="mb-4 flex items-center gap-2">
+   985→                      <Gift className="h-4 w-4 text-sky" strokeWidth={2} />
+   986→                      <p className="font-display text-sm font-semibold text-muted-foreground">
+   987→                        Бонусная программа (этап 2)
+   988→                      </p>
+   989→                      <Badge
+   990→                        variant="outline"
+   991→                        className="border-terra/60 bg-terra-light text-[10px] text-terra-dark"
+   992→                      >
+   993→                        Задел
+   994→                      </Badge>
+   995→                    </div>
+   996→                    <div className="grid gap-4 sm:grid-cols-3">
+   997→                      <div className="space-y-1.5">
+   998→                        <Label className="text-xs text-muted-foreground">Тип программы</Label>
+   999→                        <Select disabled value={card.bonusType ?? ""}>
+  1000→                          <SelectTrigger className="bg-white text-muted-foreground">
+  1001→                            <SelectValue placeholder="Не выбран" />
+  1002→                          </SelectTrigger>
+  1003→                          <SelectContent>
+  1004→                            <SelectItem value="CASH">Денежный</SelectItem>
+  1005→                            <SelectItem value="ACCUMULATIVE">Накопительный</SelectItem>
+  1006→                          </SelectContent>
+  1007→                        </Select>
+  1008→                      </div>
+  1009→                      <div className="space-y-1.5">
+  1010→                        <Label className="text-xs text-muted-foreground">Текущий баланс</Label>
+  1011→                        <Input
+  1012→                          disabled
+  1013→                          readOnly
+  1014→                          value={String(card.bonusBalance ?? 0)}
+  1015→                          className="bg-white text-muted-foreground"
+  1016→                        />
+  1017→                      </div>
+  1018→                      <div className="space-y-1.5">
+  1019→                        <Label className="text-xs text-muted-foreground">Реквизиты для выплат</Label>
+  1020→                        <Input
+  1021→                          disabled
+  1022→                          readOnly
+  1023→                          value={card.payoutDetails ?? ""}
+  1024→                          placeholder="Не указаны"
+  1025→                          className="bg-white text-muted-foreground"
+  1026→                        />
+  1027→                      </div>
+  1028→                    </div>
+  1029→                    <p className="mt-3 text-[11px] text-muted-foreground">
+  1030→                      Раздел будет активирован на этапе 2 — учет бонусных программ и выплат НВ.
+  1031→                    </p>
+  1032→                  </div>
+  1033→                </TabsContent>
+  1034→
+  1035→                {/* —— Вкладка: Визиты и коммуникации —— */}
+  1036→                <TabsContent value="visits" className="mt-4 space-y-4">
+  1037→                  <div className="flex flex-wrap items-center justify-between gap-2">
+  1038→                    <p className="text-sm text-muted-foreground">История визитов — всего {card.visits.length}</p>
+  1039→                    <Button
+  1040→                      size="sm"
+  1041→                      className="gap-1.5 bg-azure hover:bg-azure-dark"
+  1042→                      onClick={() => setVisitFormOpen((o) => !o)}
+  1043→                    >
+  1044→                      <CalendarPlus className="h-4 w-4" strokeWidth={2} /> Запланировать визит
+  1045→                    </Button>
+  1046→                  </div>
+  1047→
+  1048→                  {visitFormOpen && (
+  1049→                    <div className="space-y-3 rounded-lg border border-azure/30 bg-sky-light/40 p-4">
+  1050→                      <div className="grid gap-3 sm:grid-cols-3">
+  1051→                        <div className="space-y-1.5">
+  1052→                          <Label className="text-xs">
+  1053→                            Дата визита <span className="text-terra-dark">*</span>
+  1054→                          </Label>
+  1055→                          <Input
+  1056→                            type="date"
+  1057→                            value={visitForm.date}
+  1058→                            onChange={(e) => setVisitForm({ ...visitForm, date: e.target.value })}
+  1059→                          />
+  1060→                        </div>
+  1061→                        <div className="space-y-1.5 sm:col-span-2">
+  1062→                          <Label className="text-xs">
+  1063→                            Цель визита <span className="text-terra-dark">*</span>
+  1064→                          </Label>
+  1065→                          <Input
+  1066→                            value={visitForm.purpose}
+  1067→                            onChange={(e) => setVisitForm({ ...visitForm, purpose: e.target.value })}
+  1068→                            placeholder="Например: презентация новой линейки МРТ"
+  1069→                          />
+  1070→                        </div>
+  1071→                      </div>
+  1072→                      <div className="space-y-1.5">
+  1073→                        <Label className="text-xs">ЛПУ</Label>
+  1074→                        <Select
+  1075→                          value={visitForm.lpuId}
+  1076→                          onValueChange={(v) => setVisitForm({ ...visitForm, lpuId: v })}
+  1077→                        >
+  1078→                          <SelectTrigger className="bg-white">
+  1079→                            <SelectValue placeholder="Выберите ЛПУ (необязательно)" />
+  1080→                          </SelectTrigger>
+  1081→                          <SelectContent>
+  1082→                            <SelectItem value={NONE}>Без привязки к ЛПУ</SelectItem>
+  1083→                            {card.lpus.map(({ lpu }) => (
+  1084→                              <SelectItem key={lpu.id} value={lpu.id}>
+  1085→                                {lpu.name} · {lpu.city.name}
+  1086→                              </SelectItem>
+  1087→                            ))}
+  1088→                          </SelectContent>
+  1089→                        </Select>
+  1090→                      </div>
+  1091→                      <div className="space-y-1.5">
+  1092→                        <Label className="text-xs">Комментарий</Label>
+  1093→                        <Textarea
+  1094→                          rows={2}
+  1095→                          value={visitForm.comment}
+  1096→                          onChange={(e) => setVisitForm({ ...visitForm, comment: e.target.value })}
+  1097→                          placeholder="Договоренности, заметки о встрече…"
+  1098→                        />
+  1099→                      </div>
+  1100→                      <div className="flex justify-end gap-2">
+  1101→                        <Button size="sm" variant="ghost" onClick={() => setVisitFormOpen(false)}>
+  1102→                          Отмена
+  1103→                        </Button>
+  1104→                        <Button
+  1105→                          size="sm"
+  1106→                          className="bg-azure hover:bg-azure-dark"
+  1107→                          disabled={!visitForm.date || !visitForm.purpose.trim() || addVisit.isPending}
+  1108→                          onClick={() => addVisit.mutate()}
+  1109→                        >
+  1110→                          {addVisit.isPending && <Loader2 className="h-4 w-4 animate-spin" strokeWidth={2} />}
+  1111→                          Запланировать
+  1112→                        </Button>
+  1113→                      </div>
+  1114→                    </div>
+  1115→                  )}
+  1116→
+  1117→                  {sortedVisits.length === 0 ? (
+  1118→                    <EmptyState
+  1119→                      title="Визитов пока нет"
+  1120→                      hint="Запланируйте первую встречу с врачом — она появится в таймлайне"
+  1121→                    />
+  1122→                  ) : (
+  1123→                    <ol className="relative ml-1 max-h-96 space-y-3 overflow-y-auto border-l border-sky/40 pl-5 pr-1">
+  1124→                      {sortedVisits.map((v) => (
+  1125→                        <li key={v.id} className="relative">
+  1126→                          <span
+  1127→                            className={`absolute -left-[26px] top-2.5 h-2.5 w-2.5 rounded-full ring-4 ring-white ${
+  1128→                              v.status === "CONDUCTED" ? "bg-brand" : v.status === "CANCELLED" ? "bg-terra" : "bg-azure"
+  1129→                            }`}
+  1130→                          />
+  1131→                          <div className="rounded-lg border border-border bg-white p-3">
+  1132→                            <div className="flex flex-wrap items-center justify-between gap-2">
+  1133→                              <span className="font-display text-sm font-semibold text-brand">
+  1134→                                {fmtDate(v.date)}
+  1135→                              </span>
+  1136→                              <StatusChip status={v.status} />
+  1137→                            </div>
+  1138→                            <p className="mt-1 text-sm">{v.purpose}</p>
+  1139→                            {v.comment && (
+  1140→                              <p className="mt-1 text-xs text-muted-foreground">{v.comment}</p>
+  1141→                            )}
+  1142→                            <div className="mt-1.5 flex items-center gap-3 text-xs text-muted-foreground">
+  1143→                              {v.lpu && (
+  1144→                                <span className="inline-flex items-center gap-1">
+  1145→                                  <Building2 className="h-3 w-3 text-sky" strokeWidth={2} />
+  1146→                                  {v.lpu.name}
+  1147→                                </span>
+  1148→                              )}
+  1149→                              {v.mp && <span>МП: {v.mp.name}</span>}
+  1150→                            </div>
+  1151→                            {(v.status === "PLANNED" || isMP) && (
+  1152→                              <div className="mt-2 flex flex-wrap items-center gap-1.5">
+  1153→                                {v.status === "PLANNED" && (
+  1154→                                  <>
+  1155→                                    <Button
+  1156→                                      size="sm"
+  1157→                                      variant="outline"
+  1158→                                      className="h-7 gap-1 border-brand/30 px-2 text-[11px] text-brand hover:bg-brand hover:text-white"
+  1159→                                      onClick={() => setVisitStatus.mutate({ id: v.id, status: "CONDUCTED" })}
+  1160→                                    >
+  1161→                                      <CheckCircle2 className="h-3 w-3" strokeWidth={2} /> Проведен
+  1162→                                    </Button>
+  1163→                                    <Button
+  1164→                                      size="sm"
+  1165→                                      variant="outline"
+  1166→                                      className="h-7 gap-1 border-terra/50 px-2 text-[11px] text-terra-dark hover:bg-terra hover:text-white"
+  1167→                                      onClick={() => setVisitStatus.mutate({ id: v.id, status: "CANCELLED" })}
+  1168→                                    >
+  1169→                                      <XCircle className="h-3 w-3" strokeWidth={2} /> Отменен
+  1170→                                    </Button>
+  1171→                                  </>
+  1172→                                )}
+  1173→                                {isMP && (
+  1174→                                  <DeleteButton
+  1175→                                    title="Удалить визит?"
+  1176→                                    description="Запись о визите будет удалена и зафиксирована в журнале аудита."
+  1177→                                    onConfirm={async () => {
+  1178→                                      try {
+  1179→                                        await removeVisit.mutateAsync(v.id);
+  1180→                                      } catch (e) {
+  1181→                                        toast.error((e as Error).message);
+  1182→                                      }
+  1183→                                    }}
+  1184→                                  />
+  1185→                                )}
+  1186→                              </div>
+  1187→                            )}
+  1188→                          </div>
+  1189→                        </li>
+  1190→                      ))}
+  1191→                    </ol>
+  1192→                  )}
+  1193→                </TabsContent>
+  1194→
+  1195→                {/* —— Вкладка: Заявки —— */}
+  1196→                <TabsContent value="requests" className="mt-4 space-y-3">
+  1197→                  <div className="flex flex-wrap items-center justify-between gap-2">
+  1198→                    <p className="text-sm text-muted-foreground">
+  1199→                      Направления, зарегистрированные этим НВ — всего {card.requests.length}
+  1200→                    </p>
+  1201→                    <Button
+  1202→                      size="sm"
+  1203→                      variant="outline"
+  1204→                      className="gap-1.5 border-azure/40 text-azure hover:bg-azure hover:text-white"
+  1205→                      onClick={() => {
+  1206→                        onOpenChange(false);
+  1207→                        setActiveView("requests");
+  1208→                      }}
+  1209→                    >
+  1210→                      К заявкам <ArrowRight className="h-3.5 w-3.5" strokeWidth={2} />
+  1211→                    </Button>
+  1212→                  </div>
+  1213→                  {card.requests.length === 0 ? (
+  1214→                    <EmptyState title="Заявок нет" hint="Здесь появятся направления этого врача" />
+  1215→                  ) : (
+  1216→                    <div className="max-h-72 overflow-y-auto rounded-lg border border-border">
+  1217→                      <Table>
+  1218→                        <TableHeader className="sticky top-0 z-10 bg-white">
+  1219→                          <TableRow className="hover:bg-transparent">
+  1220→                            <TableHead>Дата</TableHead>
+  1221→                            <TableHead>Пациент</TableHead>
+  1222→                            <TableHead>Назначено</TableHead>
+  1223→                            <TableHead>Сделано</TableHead>
+  1224→                          </TableRow>
+  1225→                        </TableHeader>
+  1226→                        <TableBody>
+  1227→                          {card.requests.map((r) => (
+  1228→                            <TableRow key={r.id}>
+  1229→                              <TableCell className="whitespace-nowrap text-muted-foreground">
+  1230→                                {fmtDate(r.date)}
+  1231→                              </TableCell>
+  1232→                              <TableCell className="font-medium text-brand">{r.patientName}</TableCell>
+  1233→                              <TableCell className="text-sm">{r.assigned?.name ?? "—"}</TableCell>
+  1234→                              <TableCell>
+  1235→                                {r.done ? (
+  1236→                                  <span className="text-sm">{r.done.name}</span>
+  1237→                                ) : (
+  1238→                                  <Badge className="border-transparent bg-terra-light text-[10px] text-terra-dark hover:bg-terra-light">
+  1239→                                    Ожидает
+  1240→                                  </Badge>
+  1241→                                )}
+  1242→                              </TableCell>
+  1243→                            </TableRow>
+  1244→                          ))}
+  1245→                        </TableBody>
+  1246→                      </Table>
+  1247→                    </div>
+  1248→                  )}
+  1249→                </TabsContent>
+  1250→              </Tabs>
+  1251→            </>
+  1252→          )}
+  1253→        </DialogContent>
+  1254→      </Dialog>
+  1255→
+  1256→      {/* Диалог редактирования поверх карточки (монтируется при открытии) */}
+  1257→      {editOpen && card && (
+  1258→        <DoctorFormDialog doctor={card} onOpenChange={setEditOpen} />
+  1259→      )}
+  1260→    </>
+  1261→  );
+  1262→}
+  1263→
+  1264→/* ============================================================
+  1265→   Вспомогательные компоненты
+  1266→   ============================================================ */
+  1267→
+  1268→/** Бейдж статуса сотрудничества (цвет из справочника) */
+  1269→function StatusPill({ status }: { status: CooperationStatus }) {
+  1270→  return (
+  1271→    <span
+  1272→      className="inline-flex shrink-0 items-center gap-1 rounded-full border px-2 py-0.5 text-[10px] font-semibold"
+  1273→      style={{ borderColor: `${status.color}66`, color: status.color }}
+  1274→    >
+  1275→      <span className="h-1.5 w-1.5 rounded-full" style={{ backgroundColor: status.color }} />
+  1276→      {status.name}
+  1277→    </span>
+  1278→  );
+  1279→}
+  1280→
+  1281→/** Селект фильтра с опцией «все» */
+  1282→function FilterSelect({
+  1283→  label,
+  1284→  value,
+  1285→  onChange,
+  1286→  placeholder,
+  1287→  items,
+  1288→}: {
+  1289→  label: string;
+  1290→  value: string;
+  1291→  onChange: (v: string) => void;
+  1292→  placeholder: string;
+  1293→  items: { value: string; label: string }[];
+  1294→}) {
+  1295→  return (
+  1296→    <div className="space-y-1.5">
+  1297→      <Label className="text-xs text-muted-foreground">{label}</Label>
+  1298→      <Select value={value || ALL} onValueChange={(v) => onChange(v === ALL ? "" : v)}>
+  1299→        <SelectTrigger className="w-44 bg-white">
+  1300→          <SelectValue placeholder={placeholder} />
+  1301→        </SelectTrigger>
+  1302→        <SelectContent>
+  1303→          <SelectItem value={ALL}>{placeholder}</SelectItem>
+  1304→          {items.map((i) => (
+  1305→            <SelectItem key={i.value} value={i.value}>
+  1306→              {i.label}
+  1307→            </SelectItem>
+  1308→          ))}
+  1309→        </SelectContent>
+  1310→      </Select>
+  1311→    </div>
+  1312→  );
+  1313→}
+  1314→
+  1315→/** Поле профиля «подпись — значение» */
+  1316→function Field({
+  1317→  label,
+  1318→  value,
+  1319→  className,
+  1320→}: {
+  1321→  label: string;
+  1322→  value: React.ReactNode;
+  1323→  className?: string;
+  1324→}) {
+  1325→  return (
+  1326→    <div className={className}>
+  1327→      <p className="text-[10px] font-semibold uppercase tracking-wider text-sky">{label}</p>
+  1328→      <p className="mt-0.5 break-words text-sm text-brand">{value}</p>
+  1329→    </div>
+  1330→  );
+  1331→}
+  1332→
+  1333→/** Мини-плитка quick-stats */
+  1334→function StatBox({
+  1335→  icon,
+  1336→  label,
+  1337→  value,
+  1338→}: {
+  1339→  icon: React.ReactNode;
+  1340→  label: string;
+  1341→  value: React.ReactNode;
+  1342→}) {
+  1343→  return (
+  1344→    <div className="rounded-lg bg-sky-light/60 px-3 py-2.5">
+  1345→      <div className="flex items-center gap-1.5 text-[11px] text-muted-foreground">
+  1346→        {icon}
+  1347→        {label}
+  1348→      </div>
+  1349→      <p className="mt-0.5 truncate font-display text-lg font-bold text-brand">{value}</p>
+  1350→    </div>
+  1351→  );
+  1352→}
+  1353→

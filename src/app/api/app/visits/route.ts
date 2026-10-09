@@ -29,6 +29,7 @@ export async function GET(req: NextRequest) {
       lpu: { include: { city: true } },
       mp: { select: { id: true, name: true } },
     },
+    take: 2000,
   });
   return NextResponse.json(visits);
 }

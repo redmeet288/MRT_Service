@@ -38,6 +38,16 @@ export interface NomenclatureItem {
   updatedAt?: string;
 }
 
+/** Справочник «Специализация врача» (доработка 1.2) */
+export interface SpecializationItem {
+  id: string;
+  name: string;
+  isActive: boolean;
+  createdAt?: string;
+  updatedAt?: string;
+  _count?: { doctors: number };
+}
+
 export interface CooperationStatus {
   id: string;
   name: string;
@@ -67,11 +77,16 @@ export interface DoctorItem {
   birthDate: string | null;
   statusId: string | null;
   status: CooperationStatus | null;
-  mpId: string;
-  mp: { id: string; name: string };
+  // МП может отсутствовать: оператор создает НВ только с ФИО, МП закрепит позже
+  mpId: string | null;
+  mp: { id: string; name: string } | null;
   cityId: string | null;
   city: City | null;
   comment: string | null;
+  /** График работы НВ (доработка 1.2) — свободный текст */
+  workSchedule: string | null;
+  /** Специализации (доработка 1.2) — несколько позиций из справочника */
+  specializations: { specialization: SpecializationItem }[];
   bonusType: "CASH" | "ACCUMULATIVE" | null;
   bonusBalance: number;
   payoutDetails: string | null;
@@ -112,13 +127,14 @@ export interface RequestItem {
   lpuId: string;
   lpu: LpuWithCity;
   destination: string | null;
-  assignedId: string | null;
-  assigned: NomenclatureItem | null;
-  doneId: string | null;
-  done: NomenclatureItem | null;
+  /** Что назначено — несколько позиций номенклатуры (доработка 1.2) */
+  assignedItems: NomenclatureItem[];
+  /** Что сделано — несколько позиций номенклатуры (доработка 1.2) */
+  doneItems: NomenclatureItem[];
   authorId: string;
   author?: { id: string; name: string };
   bonusAmount?: number | null;
+  comment: string | null;
 }
 
 // —— CRM-карточка НВ ——
@@ -137,7 +153,32 @@ export interface ReportRequestRow {
   assigned: string | null;
   done: string | null;
   bonus: number | null;
+  // Денормализованные поля (для вариантов группировки по ЛПУ / НВ / Номенклатуре)
+  doctorName?: string;
+  mpName?: string;
+  lpuName?: string;
+  cityName?: string;
 }
+
+/** Универсальный узел дерева отчета (variant=mp|lpu|doctor|nomenclature) */
+export interface ReportGroupNode {
+  level: "mp" | "lpu" | "doctor" | "nomenclature";
+  id: string;
+  name: string;
+  subtitle: string;
+  total: number;
+  done: number;
+  children: ReportGroupNode[];
+  requests: ReportRequestRow[];
+}
+export interface ReportV2Response {
+  generatedAt: string;
+  total: number;
+  variant: "mp" | "lpu" | "doctor" | "nomenclature";
+  tree: ReportGroupNode[];
+}
+
+/** @deprecated старый формат МП→ЛПУ→НВ (совместимость) */
 export interface ReportDoctorNode {
   id: string;
   name: string;
@@ -177,17 +218,17 @@ export interface ReportPreset {
 
 // —— Дашборд ——
 export interface DashboardData {
+  scope: "all" | "mine";
   kpi: {
     doctorsTotal: number;
     lpusTotal: number;
     requests30: number;
     done30: number;
-    plannedVisits: number;
+    visits7: number;
     totalRequests: number;
   };
-  weeks: Array<{ label: string; count: number }>;
+  weeks: Array<{ label: string; count: number; from: string; to: string }>;
   upcomingVisits: Array<VisitItem & { doctor: { id: string; fullName: string } }>;
-  recentRequests: RequestItem[];
   topDoctors: Array<{ id: string; name: string; mp: string; count: number }>;
 }
 

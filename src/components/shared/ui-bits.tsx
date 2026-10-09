@@ -1,6 +1,7 @@
 "use client";
 
 import { useState } from "react";
+import { ArrowDown, ArrowUp, ArrowUpDown } from "lucide-react";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import {
   AlertDialog,
@@ -181,4 +182,122 @@ export function fmtDateTime(iso: string | Date | null | undefined): string {
     hour: "2-digit",
     minute: "2-digit",
   });
+}
+
+/* ============================================================
+   Сортировка таблиц (доработка 1.2): клик по заголовку столбца —
+   сортировка по возрастанию, повторный — по убыванию, третий — сброс.
+   ============================================================ */
+
+export interface SortState {
+  field: string;
+  dir: "asc" | "desc";
+}
+
+/** Цикл сортировки: нет → asc → desc → нет */
+export function cycleSort(
+  current: SortState | null,
+  field: string
+): SortState | null {
+  if (!current || current.field !== field) return { field, dir: "asc" };
+  if (current.dir === "asc") return { field, dir: "desc" };
+  return null;
+}
+
+/** Сортировка массива по одному полю; null/"" — всегда в конце */
+export function applySort<T>(
+  rows: T[],
+  sort: SortState | null,
+  getter: (row: T, field: string) => string | number | null | undefined
+): T[] {
+  if (!sort) return rows;
+  const { field, dir } = sort;
+  const mul = dir === "asc" ? 1 : -1;
+  return [...rows].sort((a, b) => {
+    const va = getter(a, field);
+    const vb = getter(b, field);
+    const emptyA = va === null || va === undefined || va === "";
+    const emptyB = vb === null || vb === undefined || vb === "";
+    if (emptyA && emptyB) return 0;
+    if (emptyA) return 1; // пустые — в конец независимо от направления
+    if (emptyB) return -1;
+    if (typeof va === "number" && typeof vb === "number") {
+      return (va - vb) * mul;
+    }
+    return String(va).localeCompare(String(vb), "ru", { numeric: true }) * mul;
+  });
+}
+
+/**
+ * Кнопка сортировки для заголовка столбца (используется внутри <th>); самостоятельный
+ * вариант для shadcn-таблиц — <TableHead><SortButton … /></TableHead>.
+ */
+export function SortButton({
+  label,
+  field,
+  sort,
+  onSort,
+  ariaLabel,
+}: {
+  label: React.ReactNode;
+  field: string;
+  sort: SortState | null;
+  onSort: (field: string) => void;
+  ariaLabel?: string;
+}) {
+  const active = sort?.field === field;
+  const dir = active ? sort.dir : null;
+  const Icon = !active ? ArrowUpDown : dir === "asc" ? ArrowUp : ArrowDown;
+  return (
+    <button
+      type="button"
+      className="onec-sort-btn"
+      data-active={active}
+      onClick={() => onSort(field)}
+      aria-label={ariaLabel ?? `Сортировать по столбцу «${typeof label === "string" ? label : field}»`}
+      title="Сортировать по столбцу"
+    >
+      {label}
+      <Icon
+        className="h-3 w-3 shrink-0"
+        strokeWidth={2.5}
+        style={{ opacity: active ? 1 : 0.4 }}
+        aria-hidden
+      />
+    </button>
+  );
+}
+
+/**
+ * Сортируемый заголовок 1С-таблицы. Использование:
+ * <SortableTh label="НВ" field="doctor" sort={sort} onSort={(f) => setSort(cycleSort(sort, f))} />
+ */
+export function SortableTh({
+  label,
+  field,
+  sort,
+  onSort,
+  className,
+  align = "left",
+  ariaLabel,
+}: {
+  label: React.ReactNode;
+  field: string;
+  sort: SortState | null;
+  onSort: (field: string) => void;
+  className?: string;
+  align?: "left" | "center" | "right";
+  ariaLabel?: string;
+}) {
+  const active = sort?.field === field;
+  const dir = active ? sort.dir : null;
+  return (
+    <th
+      className={className}
+      style={{ textAlign: align }}
+      aria-sort={active ? (dir === "asc" ? "ascending" : "descending") : "none"}
+    >
+      <SortButton label={label} field={field} sort={sort} onSort={onSort} ariaLabel={ariaLabel} />
+    </th>
+  );
 }

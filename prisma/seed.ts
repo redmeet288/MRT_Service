@@ -15,11 +15,14 @@ async function main() {
   console.log("Seeding…");
   await db.auditLog.deleteMany();
   await db.bonusTransaction.deleteMany();
+  await db.requestNomenclatureItem.deleteMany();
+  await db.doctorSpecialization.deleteMany();
   await db.request.deleteMany();
   await db.visit.deleteMany();
   await db.doctorLpu.deleteMany();
   await db.doctor.deleteMany();
   await db.reportPreset.deleteMany();
+  await db.specialization.deleteMany();
   await db.nomenclature.deleteMany();
   await db.cooperationStatus.deleteMany();
   await db.lpu.deleteMany();
@@ -97,6 +100,34 @@ async function main() {
   const d8 = await mkDoctor("Тихонова Вера Львовна", mp2.id, stChP.id, chelyabinsk.id, "+7 (932) 999-00-11", [lpuUral.id], "1981-08-08");
   const d9 = await mkDoctor("Комаров Станислав Юрьевич", mp2.id, stShtat.id, chelyabinsk.id, "+7 (963) 123-45-67", [lpuGKB5.id], "1969-05-14");
 
+  // —— Специализации врачей (доработка 1.2) ——
+  const spec = (name: string) => db.specialization.create({ data: { name } });
+  const sNeuro = await spec("Неврология");
+  const sTrauma = await spec("Травматология-ортопедия");
+  const sTherapy = await spec("Терапия");
+  const sNeurosurg = await spec("Нейрохирургия");
+  const sRheum = await spec("Ревматология");
+  const sCardio = await spec("Кардиология");
+
+  // Специализации НВ + график работы (доработка 1.2)
+  const linkSpecs = (doctorId: string, ids: string[], schedule?: string) =>
+    db.doctor.update({
+      where: { id: doctorId },
+      data: {
+        workSchedule: schedule ?? null,
+        specializations: { create: ids.map((specializationId) => ({ specializationId })) },
+      },
+    });
+  await linkSpecs(d1.id, [sNeuro.id, sTherapy.id], "Пн–Пт, 8:00–14:00");
+  await linkSpecs(d2.id, [sNeuro.id], "Пн, Ср, Пт, 9:00–15:00");
+  await linkSpecs(d3.id, [sTrauma.id], "Вт, Чт, 10:00–16:00");
+  await linkSpecs(d4.id, [sTherapy.id, sCardio.id]);
+  await linkSpecs(d5.id, [sNeurosurg.id, sTrauma.id], "Пн–Пт, 15:00–20:00");
+  await linkSpecs(d6.id, [sRheum.id]);
+  await linkSpecs(d7.id, [sTrauma.id, sNeurosurg.id], "Ср–Вс, 9:00–18:00");
+  await linkSpecs(d8.id, [sTherapy.id]);
+  await linkSpecs(d9.id, [sNeuro.id, sRheum.id], "Пн–Сб, 8:00–12:00");
+
   // —— Визиты ——
   const mkVisit = (doctorId: string, lpuId: string, mpId: string, date: Date, purpose: string, status: string, comment?: string) =>
     db.visit.create({ data: { doctorId, lpuId, mpId, date, purpose, status, comment } });
@@ -118,7 +149,7 @@ async function main() {
     "Абрамова Т. Ю.", "Белов Г. Д.", "Карпова Е. А.", "Романов В. В.", "Григорьева О. И.",
     "Савельев П. П.", "Титова Н. Н.", "Максимов Д. А.", "Осипова Л. С.", "Виноградов А. К.",
   ];
-  const templates: Array<[typeof d1, string, string, string, string, string, string, string]> = [
+  const templates: Array<[typeof d1, string, string, string, typeof nBrain, typeof nBrain | null, number]> = [
     [d1, lpuGB1.id, troitsk.id, "МРТ головного мозга", nBrain, nBrain, 46],
     [d1, lpuGB1.id, troitsk.id, "МРТ поясничного отдела", nLumbar, nLumbar, 38],
     [d2, lpuMedLine.id, troitsk.id, "«Весь организм»", nAll, nAll, 12],
@@ -147,17 +178,29 @@ async function main() {
   ];
 
   for (let i = 0; i < templates.length; i++) {
-    const [doc, lpuId, _cityId, dest, assigned, done, ago] = templates[i];
+    const [doc, lpuId, _cityId, _dest, assigned, done, ago] = templates[i];
+    // Доработка 1.2: мультиноменклатура — часть заявок с несколькими позициями;
+    // «Куда направление» — по умолчанию «МРТ ТОЧНО» (как при незаполненном поле)
+    const extraAssigned = i % 5 === 0 ? nPituitary : null;
+    const extraDone = i % 7 === 0 ? nCervical : null;
     await db.request.create({
       data: {
         date: daysAgo(ago),
         patientName: patients[i % patients.length],
         doctorId: doc.id,
         lpuId,
-        destination: dest,
+        destination: "МРТ ТОЧНО",
         assignedId: assigned.id,
         doneId: done ? done.id : null,
-        authorId: doc.mpId,
+        authorId: doc.mpId ?? mp1.id,
+        items: {
+          create: [
+            { nomenclatureId: assigned.id, kind: "ASSIGNED" },
+            ...(extraAssigned ? [{ nomenclatureId: extraAssigned.id, kind: "ASSIGNED" as const }] : []),
+            ...(done ? [{ nomenclatureId: done.id, kind: "DONE" }] : []),
+            ...(extraDone && done ? [{ nomenclatureId: extraDone.id, kind: "DONE" as const }] : []),
+          ],
+        },
       },
     });
   }

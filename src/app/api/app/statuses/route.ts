@@ -42,3 +42,22 @@ export async function DELETE(req: NextRequest) {
   await audit(session, "DELETE", "status", id, `Статус: ${item.name}`);
   return NextResponse.json({ ok: true });
 }
+
+// PUT /api/app/statuses — редактирование статуса
+export async function PUT(req: NextRequest) {
+  const { session, error } = await requireAuth();
+  if (error) return error;
+  const body = await req.json().catch(() => null);
+  const id = String(body?.id ?? "");
+  const name = String(body?.name ?? "").trim();
+  if (!id) return badRequest("Не указан id");
+  if (!name) return badRequest("Укажите название статуса");
+  const dup = await db.cooperationStatus.findFirst({ where: { name, NOT: { id } } });
+  if (dup) return badRequest("Такой статус уже существует");
+  const item = await db.cooperationStatus
+    .update({ where: { id }, data: { name, ...(body?.color ? { color: String(body.color) } : {}) } })
+    .catch(() => null);
+  if (!item) return notFound("Статус не найден");
+  await audit(session, "UPDATE", "status", id, `Статус: ${name}`);
+  return NextResponse.json(item);
+}

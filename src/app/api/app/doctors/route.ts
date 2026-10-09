@@ -26,6 +26,7 @@ export async function GET(req: NextRequest) {
       mp: { select: { id: true, name: true } },
       city: true,
       lpus: { include: { lpu: { include: { city: true } } } },
+      specializations: { include: { specialization: true } },
       _count: { select: { requests: true, visits: true } },
     },
   });
@@ -33,18 +34,23 @@ export async function GET(req: NextRequest) {
 }
 
 // POST /api/app/doctors — создание первичной карточки НВ (доступно и Оператору)
+// МП не обязателен: оператор создает НВ только с ФИО, МП затем закрепит врача за собой
 export async function POST(req: NextRequest) {
   const { session, error } = await requireAuth();
   if (error) return error;
   const body = await req.json().catch(() => null);
   const fullName = String(body?.fullName ?? "").trim();
   if (!fullName) return badRequest("Укажите ФИО врача");
-  const mpId = String(body?.mpId ?? "").trim();
-  if (!mpId) return badRequest("Выберите курирующего МП");
-  const mp = await db.user.findUnique({ where: { id: mpId } });
-  if (!mp || mp.role !== "MP") return badRequest("Указанный пользователь не является МП");
+  const mpId = body?.mpId ? String(body.mpId).trim() : null;
+  if (mpId) {
+    const mp = await db.user.findUnique({ where: { id: mpId } });
+    if (!mp || mp.role !== "MP") return badRequest("Указанный пользователь не является МП");
+  }
 
   const lpuIds: string[] = Array.isArray(body?.lpuIds) ? body.lpuIds : [];
+  const specIds: string[] = Array.isArray(body?.specializationIds)
+    ? body.specializationIds.map(String)
+    : [];
   const doctor = await db.doctor.create({
     data: {
       fullName,
@@ -54,10 +60,13 @@ export async function POST(req: NextRequest) {
       mpId,
       cityId: body?.cityId ? String(body.cityId) : null,
       comment: body?.comment ? String(body.comment) : null,
+      // График работы НВ (доработка 1.2) — свободный текст, необязательно
+      workSchedule: body?.workSchedule ? String(body.workSchedule) : null,
       // Задел под бонусную систему — приходит скрытым/неактивным на старте
       bonusType: body?.bonusType ? String(body.bonusType) : null,
       payoutDetails: body?.payoutDetails ? String(body.payoutDetails) : null,
       lpus: { create: lpuIds.map((lpuId) => ({ lpuId })) },
+      specializations: { create: specIds.map((specializationId) => ({ specializationId })) },
     },
   });
   await audit(session, "CREATE", "doctor", doctor.id, `НВ: ${fullName}`);

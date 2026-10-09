@@ -1,0 +1,792 @@
+     1→"use client";
+     2→
+     3→import { useMemo, useState } from "react";
+     4→import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+     5→import { useSession } from "next-auth/react";
+     6→import { toast } from "sonner";
+     7→import { format } from "date-fns";
+     8→import { api, qs } from "@/lib/api-client";
+     9→import type {
+    10→  CityData,
+    11→  DoctorItem,
+    12→  NomenclatureItem,
+    13→  RequestItem,
+    14→  Role,
+    15→  UserBasic,
+    16→} from "@/lib/types";
+    17→import {
+    18→  SectionCard,
+    19→  EmptyState,
+    20→  DeleteButton,
+    21→  RowsSkeleton,
+    22→  fmtDate,
+    23→} from "@/components/shared/ui-bits";
+    24→import { Button } from "@/components/ui/button";
+    25→import { Input } from "@/components/ui/input";
+    26→import { Label } from "@/components/ui/label";
+    27→import { Textarea } from "@/components/ui/textarea";
+    28→import { Badge } from "@/components/ui/badge";
+    29→import {
+    30→  Dialog,
+    31→  DialogContent,
+    32→  DialogDescription,
+    33→  DialogFooter,
+    34→  DialogHeader,
+    35→  DialogTitle,
+    36→} from "@/components/ui/dialog";
+    37→import {
+    38→  Select,
+    39→  SelectContent,
+    40→  SelectItem,
+    41→  SelectTrigger,
+    42→  SelectValue,
+    43→} from "@/components/ui/select";
+    44→import { ToggleGroup, ToggleGroupItem } from "@/components/ui/toggle-group";
+    45→import { ClipboardList, MessageSquare, Pencil, Plus, RotateCcw } from "lucide-react";
+    46→import { useUiStore } from "@/store/ui";
+    47→
+    48→const ALL = "__all__";
+    49→const NONE = "__none__";
+    50→
+    51→/** Пользователь сессии: JWT-колбэк кладет uid и role (типизация next-auth по умолчанию их не знает) */
+    52→type SessionUserWithRole = { uid?: string; role?: Role } | undefined;
+    53→
+    54→/** Сегодняшняя дата в формате YYYY-MM-DD (локальная зона) */
+    55→function todayISO(): string {
+    56→  const d = new Date();
+    57→  return new Date(d.getTime() - d.getTimezoneOffset() * 60000).toISOString().slice(0, 10);
+    58→}
+    59→
+    60→/** ISO-дата (из drill-down дашборда) → yyyy-MM-dd для input[type=date] */
+    61→function isoToYMD(iso: string | undefined): string {
+    62→  if (!iso) return "";
+    63→  const d = new Date(iso);
+    64→  return Number.isNaN(d.getTime()) ? "" : format(d, "yyyy-MM-dd");
+    65→}
+    66→
+    67→interface RequestFilters {
+    68→  from: string;
+    69→  to: string;
+    70→  doctorId: string;
+    71→  lpuId: string;
+    72→  mpId: string;
+    73→  /** Заполняется только drill-down-переходом с дашборда (отдельного контрола в разделе нет) */
+    74→  assignedId: string;
+    75→  done: string; // "" — все, "0" — только невыполненные, "1" — только выполненные
+    76→}
+    77→
+    78→const emptyFilters: RequestFilters = {
+    79→  from: "",
+    80→  to: "",
+    81→  doctorId: "",
+    82→  lpuId: "",
+    83→  mpId: "",
+    84→  assignedId: "",
+    85→  done: "",
+    86→};
+    87→
+    88→/* ============================================================
+    89→   Вьюха «Заявки» — учет направлений (список в стиле 1С)
+    90→   ============================================================ */
+    91→export function RequestsView() {
+    92→  const qc = useQueryClient();
+    93→  const { data: session } = useSession();
+    94→  const isMP = (session?.user as SessionUserWithRole)?.role === "MP";
+    95→
+    96→  // Drill-down из дашборда: одноразовое поглощение фильтров в инициализаторе
+    97→  // состояния (без useEffect — правило react-hooks/set-state-in-effect)
+    98→  const [navFilters] = useState(() => useUiStore.getState().consumeRequestsFilters());
+    99→  const [filters, setFilters] = useState<RequestFilters>(() => ({
+   100→    ...emptyFilters,
+   101→    ...(navFilters
+   102→      ? {
+   103→          from: isoToYMD(navFilters.from),
+   104→          to: isoToYMD(navFilters.to),
+   105→          mpId: navFilters.mpId ?? "",
+   106→          lpuId: navFilters.lpuId ?? "",
+   107→          doctorId: navFilters.doctorId ?? "",
+   108→          assignedId: navFilters.assignedId ?? "",
+   109→          done: navFilters.done ?? "",
+   110→        }
+   111→      : {}),
+   112→  }));
+   113→  const [formOpen, setFormOpen] = useState(false);
+   114→  const [editing, setEditing] = useState<RequestItem | null>(null);
+   115→
+   116→  /** Открыть карточку заявки (= диалог редактирования) */
+   117→  function openCard(r: RequestItem) {
+   118→    setEditing(r);
+   119→    setFormOpen(true);
+   120→  }
+   121→
+   122→  const { data: requests, isLoading } = useQuery<RequestItem[]>({
+   123→    queryKey: [
+   124→      "requests",
+   125→      "list",
+   126→      filters.from,
+   127→      filters.to,
+   128→      filters.doctorId,
+   129→      filters.lpuId,
+   130→      filters.mpId,
+   131→      filters.assignedId,
+   132→      filters.done,
+   133→    ],
+   134→    queryFn: () =>
+   135→      api.get(
+   136→        `/api/app/requests${qs({
+   137→          from: filters.from,
+   138→          to: filters.to,
+   139→          doctorId: filters.doctorId,
+   140→          lpuId: filters.lpuId,
+   141→          mpId: filters.mpId,
+   142→          assignedId: filters.assignedId,
+   143→          done: filters.done,
+   144→        })}`
+   145→      ),
+   146→  });
+   147→  const { data: doctors } = useQuery<DoctorItem[]>({
+   148→    queryKey: ["doctors", "all"],
+   149→    queryFn: () => api.get("/api/app/doctors"),
+   150→  });
+   151→  const { data: lpus } = useQuery<CityData[]>({
+   152→    queryKey: ["lpus"],
+   153→    queryFn: () => api.get("/api/app/lpus"),
+   154→  });
+   155→  const { data: users } = useQuery<UserBasic[]>({
+   156→    queryKey: ["users-basic"],
+   157→    queryFn: () => api.get("/api/app/users?basic=1"),
+   158→  });
+   159→
+   160→  const mps = useMemo(() => (users ?? []).filter((u) => u.role === "MP"), [users]);
+   161→
+   162→  // Удаление заявки — только МП
+   163→  const remove = useMutation({
+   164→    mutationFn: (id: string) => api.del(`/api/app/requests/${id}`),
+   165→    onSuccess: () => {
+   166→      toast.success("Заявка удалена");
+   167→      qc.invalidateQueries({ queryKey: ["requests"] });
+   168→      qc.invalidateQueries({ queryKey: ["doctor-card"] });
+   169→      qc.invalidateQueries({ queryKey: ["dashboard"] });
+   170→    },
+   171→    onError: (e: Error) => toast.error(e.message),
+   172→  });
+   173→
+   174→  return (
+   175→    <div className="space-y-4">
+   176→      <SectionCard
+   177→        title="Заявки"
+   178→        description="Учет направлений: что назначено НВ и что сделано, по врачам и ЛПУ"
+   179→        action={
+   180→          <Button
+   181→            onClick={() => {
+   182→              setEditing(null);
+   183→              setFormOpen(true);
+   184→            }}
+   185→            className="gap-1.5 bg-azure hover:bg-azure-dark"
+   186→          >
+   187→            <Plus className="h-4 w-4" strokeWidth={2} /> Зарегистрировать заявку
+   188→          </Button>
+   189→        }
+   190→      >
+   191→        <div className="space-y-4">
+   192→          {/* Панель фильтров */}
+   193→          <div className="flex flex-wrap items-end gap-3">
+   194→            <div className="space-y-1.5">
+   195→              <Label className="text-xs text-muted-foreground">Период с</Label>
+   196→              <Input
+   197→                type="date"
+   198→                value={filters.from}
+   199→                onChange={(e) => setFilters((f) => ({ ...f, from: e.target.value }))}
+   200→                className="w-40 bg-white"
+   201→              />
+   202→            </div>
+   203→            <div className="space-y-1.5">
+   204→              <Label className="text-xs text-muted-foreground">по</Label>
+   205→              <Input
+   206→                type="date"
+   207→                value={filters.to}
+   208→                onChange={(e) => setFilters((f) => ({ ...f, to: e.target.value }))}
+   209→                className="w-40 bg-white"
+   210→              />
+   211→            </div>
+   212→            <div className="space-y-1.5">
+   213→              <Label className="text-xs text-muted-foreground">НВ</Label>
+   214→              <Select
+   215→                value={filters.doctorId || ALL}
+   216→                onValueChange={(v) => setFilters((f) => ({ ...f, doctorId: v === ALL ? "" : v }))}
+   217→              >
+   218→                <SelectTrigger className="w-48 bg-white">
+   219→                  <SelectValue placeholder="Все НВ" />
+   220→                </SelectTrigger>
+   221→                <SelectContent className="max-h-72">
+   222→                  <SelectItem value={ALL}>Все НВ</SelectItem>
+   223→                  {(doctors ?? []).map((d) => (
+   224→                    <SelectItem key={d.id} value={d.id}>
+   225→                      {d.fullName}
+   226→                    </SelectItem>
+   227→                  ))}
+   228→                </SelectContent>
+   229→              </Select>
+   230→            </div>
+   231→            <div className="space-y-1.5">
+   232→              <Label className="text-xs text-muted-foreground">ЛПУ</Label>
+   233→              <Select
+   234→                value={filters.lpuId || ALL}
+   235→                onValueChange={(v) => setFilters((f) => ({ ...f, lpuId: v === ALL ? "" : v }))}
+   236→              >
+   237→                <SelectTrigger className="w-48 bg-white">
+   238→                  <SelectValue placeholder="Все ЛПУ" />
+   239→                </SelectTrigger>
+   240→                <SelectContent className="max-h-72">
+   241→                  <SelectItem value={ALL}>Все ЛПУ</SelectItem>
+   242→                  {(lpus ?? []).map((l) => (
+   243→                    <SelectItem key={l.id} value={l.id}>
+   244→                      {l.name}
+   245→                    </SelectItem>
+   246→                  ))}
+   247→                </SelectContent>
+   248→              </Select>
+   249→            </div>
+   250→            <div className="space-y-1.5">
+   251→              <Label className="text-xs text-muted-foreground">МП</Label>
+   252→              <Select
+   253→                value={filters.mpId || ALL}
+   254→                onValueChange={(v) => setFilters((f) => ({ ...f, mpId: v === ALL ? "" : v }))}
+   255→              >
+   256→                <SelectTrigger className="w-44 bg-white">
+   257→                  <SelectValue placeholder="Все МП" />
+   258→                </SelectTrigger>
+   259→                <SelectContent>
+   260→                  <SelectItem value={ALL}>Все МП</SelectItem>
+   261→                  {mps.map((m) => (
+   262→                    <SelectItem key={m.id} value={m.id}>
+   263→                      {m.name}
+   264→                    </SelectItem>
+   265→                  ))}
+   266→                </SelectContent>
+   267→              </Select>
+   268→            </div>
+   269→            <div className="space-y-1.5">
+   270→              <Label className="text-xs text-muted-foreground">Выполнение</Label>
+   271→              <ToggleGroup
+   272→                type="single"
+   273→                variant="outline"
+   274→                size="sm"
+   275→                className="rounded-lg bg-white"
+   276→                value={filters.done === "" ? "all" : filters.done}
+   277→                onValueChange={(v) => {
+   278→                  if (v) setFilters((f) => ({ ...f, done: v === "all" ? "" : v }));
+   279→                }}
+   280→              >
+   281→                <ToggleGroupItem value="all" className="px-3 text-xs">
+   282→                  Все
+   283→                </ToggleGroupItem>
+   284→                <ToggleGroupItem value="0" className="px-3 text-xs">
+   285→                  Невыполненные
+   286→                </ToggleGroupItem>
+   287→                <ToggleGroupItem value="1" className="px-3 text-xs">
+   288→                  Выполненные
+   289→                </ToggleGroupItem>
+   290→              </ToggleGroup>
+   291→            </div>
+   292→            <Button
+   293→              variant="ghost"
+   294→              size="sm"
+   295→              className="gap-1.5 text-sky hover:text-brand"
+   296→              onClick={() => setFilters(emptyFilters)}
+   297→            >
+   298→              <RotateCcw className="h-3.5 w-3.5" strokeWidth={2} /> Сбросить
+   299→            </Button>
+   300→          </div>
+   301→
+   302→          {/* Таблица заявок — в стиле 1С; клик по строке открывает карточку заявки */}
+   303→          {isLoading ? (
+   304→            <RowsSkeleton rows={6} />
+   305→          ) : !requests?.length ? (
+   306→            <EmptyState
+   307→              title="Заявок не найдено"
+   308→              hint="Измените фильтры или зарегистрируйте первое направление пациента"
+   309→            />
+   310→          ) : (
+   311→            <>
+   312→              <p className="text-xs text-muted-foreground">
+   313→                Найдено заявок: {requests.length}
+   314→                {requests.length >= 5000 && " (показаны первые 5000)"}
+   315→              </p>
+   316→              <div className="onec-window">
+   317→                <div className="max-h-96 overflow-y-auto">
+   318→                  <table className="onec-table">
+   319→                    <thead>
+   320→                      <tr>
+   321→                        <th className="w-24">Дата</th>
+   322→                        <th>Пациент</th>
+   323→                        <th>НВ</th>
+   324→                        <th>ЛПУ</th>
+   325→                        <th>Куда направление</th>
+   326→                        <th>Что назначено</th>
+   327→                        <th>Что сделано</th>
+   328→                        <th>Автор</th>
+   329→                        <th className="w-20" />
+   330→                      </tr>
+   331→                    </thead>
+   332→                    <tbody>
+   333→                      {requests.map((r) => (
+   334→                        <tr
+   335→                          key={r.id}
+   336→                          className="cursor-pointer"
+   337→                          onClick={() => openCard(r)}
+   338→                          title="Открыть карточку заявки"
+   339→                        >
+   340→                          <td className="whitespace-nowrap text-muted-foreground">
+   341→                            {fmtDate(r.date)}
+   342→                          </td>
+   343→                          <td className="font-medium text-brand">
+   344→                            <span className="inline-flex items-center gap-1.5">
+   345→                              {r.patientName}
+   346→                              {r.comment && (
+   347→                                <span
+   348→                                  title={r.comment}
+   349→                                  className="inline-flex text-sky"
+   350→                                  aria-label="Заявка с комментарием"
+   351→                                >
+   352→                                  <MessageSquare className="h-3.5 w-3.5" strokeWidth={2} />
+   353→                                </span>
+   354→                              )}
+   355→                            </span>
+   356→                          </td>
+   357→                          <td>
+   358→                            <span className="text-sm">{r.doctor.fullName}</span>
+   359→                            <span className="block text-[11px] text-muted-foreground">
+   360→                              МП: {r.doctor.mp?.name ?? "—"}
+   361→                            </span>
+   362→                          </td>
+   363→                          <td>
+   364→                            <span className="text-sm">{r.lpu.name}</span>
+   365→                            <span className="block text-[11px] text-muted-foreground">
+   366→                              {r.lpu.city.name}
+   367→                            </span>
+   368→                          </td>
+   369→                          <td className="text-sm text-muted-foreground">
+   370→                            {r.destination ?? "—"}
+   371→                          </td>
+   372→                          <td className="text-sm">{r.assigned?.name ?? "—"}</td>
+   373→                          <td>
+   374→                            {r.done ? (
+   375→                              <span className="text-sm">{r.done.name}</span>
+   376→                            ) : (
+   377→                              <Badge className="border-transparent bg-terra-light text-[10px] text-terra-dark hover:bg-terra-light">
+   378→                                Ожидает
+   379→                              </Badge>
+   380→                            )}
+   381→                          </td>
+   382→                          <td className="text-sm text-muted-foreground">
+   383→                            {r.author?.name ?? "—"}
+   384→                          </td>
+   385→                          <td>
+   386→                            <div className="flex items-center gap-1">
+   387→                              <Button
+   388→                                variant="ghost"
+   389→                                size="icon"
+   390→                                className="h-8 w-8 text-sky hover:text-brand"
+   391→                                onClick={(e) => {
+   392→                                  e.stopPropagation();
+   393→                                  openCard(r);
+   394→                                }}
+   395→                                aria-label="Редактировать заявку"
+   396→                                title="Редактировать"
+   397→                              >
+   398→                                <Pencil className="h-4 w-4" strokeWidth={2} />
+   399→                              </Button>
+   400→                              {isMP && (
+   401→                                <span
+   402→                                  className="inline-flex"
+   403→                                  onClick={(e) => e.stopPropagation()}
+   404→                                >
+   405→                                  <DeleteButton
+   406→                                    title={`Удалить заявку по пациенту «${r.patientName}»?`}
+   407→                                    onConfirm={async () => {
+   408→                                      try {
+   409→                                        await remove.mutateAsync(r.id);
+   410→                                      } catch (e) {
+   411→                                        toast.error((e as Error).message);
+   412→                                      }
+   413→                                    }}
+   414→                                  />
+   415→                                </span>
+   416→                              )}
+   417→                            </div>
+   418→                          </td>
+   419→                        </tr>
+   420→                      ))}
+   421→                    </tbody>
+   422→                  </table>
+   423→                </div>
+   424→              </div>
+   425→            </>
+   426→          )}
+   427→        </div>
+   428→      </SectionCard>
+   429→
+   430→      {/* Диалог создания / редактирования заявки (монтируется при открытии — форма инициализируется заново) */}
+   431→      {formOpen && <RequestFormDialog request={editing} onOpenChange={setFormOpen} />}
+   432→    </div>
+   433→  );
+   434→}
+   435→export default RequestsView;
+   436→
+   437→/* ============================================================
+   438→   Диалог регистрации / редактирования заявки (строго по ТЗ)
+   439→   ============================================================ */
+   440→interface RequestFormState {
+   441→  date: string;
+   442→  patientName: string;
+   443→  doctorId: string;
+   444→  lpuId: string;
+   445→  destination: string;
+   446→  assignedId: string;
+   447→  doneId: string;
+   448→  comment: string;
+   449→}
+   450→
+   451→/** Начальное состояние формы: из заявки при редактировании / пустая (дата — сегодня) при создании */
+   452→function initRequestForm(request: RequestItem | null): RequestFormState {
+   453→  if (!request) {
+   454→    return {
+   455→      date: todayISO(),
+   456→      patientName: "",
+   457→      doctorId: "",
+   458→      lpuId: "",
+   459→      destination: "",
+   460→      assignedId: "",
+   461→      doneId: "",
+   462→      comment: "",
+   463→    };
+   464→  }
+   465→  return {
+   466→    date: request.date.slice(0, 10),
+   467→    patientName: request.patientName,
+   468→    doctorId: request.doctorId,
+   469→    lpuId: request.lpuId,
+   470→    destination: request.destination ?? "",
+   471→    assignedId: request.assignedId ?? "",
+   472→    doneId: request.doneId ?? "",
+   473→    comment: request.comment ?? "",
+   474→  };
+   475→}
+   476→
+   477→function RequestFormDialog({
+   478→  request,
+   479→  onOpenChange,
+   480→}: {
+   481→  request: RequestItem | null;
+   482→  onOpenChange: (o: boolean) => void;
+   483→}) {
+   484→  const qc = useQueryClient();
+   485→  const [form, setForm] = useState<RequestFormState>(() => initRequestForm(request));
+   486→
+   487→  const { data: doctors } = useQuery<DoctorItem[]>({
+   488→    queryKey: ["doctors", "all"],
+   489→    queryFn: () => api.get("/api/app/doctors"),
+   490→  });
+   491→  const { data: nomenclature } = useQuery<NomenclatureItem[]>({
+   492→    queryKey: ["nomenclature", "active"],
+   493→    queryFn: () => api.get("/api/app/nomenclature?active=1"),
+   494→  });
+   495→  const { data: lpus } = useQuery<CityData[]>({
+   496→    queryKey: ["lpus"],
+   497→    queryFn: () => api.get("/api/app/lpus"),
+   498→  });
+   499→
+   500→  const selectedDoctor = useMemo(
+   501→    () => doctors?.find((d) => d.id === form.doctorId) ?? null,
+   502→    [doctors, form.doctorId]
+   503→  );
+   504→
+   505→  // ЛПУ, привязанные к выбранному НВ (данные lpus уже приходят в ответе doctors)
+   506→  const doctorLpus = useMemo(() => selectedDoctor?.lpus.map((x) => x.lpu) ?? [], [selectedDoctor]);
+   507→
+   508→  // Режим выбора ЛПУ: 1 привязка — авто; несколько — Select из привязок; 0 — свободный Select
+   509→  const lpuMode: "none" | "single" | "multi" | "free" = !selectedDoctor
+   510→    ? "none"
+   511→    : doctorLpus.length === 1
+   512→      ? "single"
+   513→      : doctorLpus.length > 1
+   514→        ? "multi"
+   515→        : "free";
+   516→
+   517→  // Варианты для режима «несколько ЛПУ» (+ защита для редактируемой заявки)
+   518→  const multiOptions = useMemo(() => {
+   519→    const opts = [...doctorLpus];
+   520→    if (request && request.lpuId && !opts.some((l) => l.id === request.lpuId)) {
+   521→      opts.push(request.lpu);
+   522→    }
+   523→    return opts;
+   524→  }, [doctorLpus, request]);
+   525→
+   526→  // Итоговый lpuId: при единственном ЛПУ НВ — подставляется автоматически
+   527→  const resolvedLpuId = lpuMode === "single" ? (doctorLpus[0]?.id ?? "") : form.lpuId;
+   528→
+   529→  const lpuCity = useMemo(() => {
+   530→    if (!resolvedLpuId) return null;
+   531→    const fromDoctor = doctorLpus.find((l) => l.id === resolvedLpuId);
+   532→    if (fromDoctor) return fromDoctor.city.name;
+   533→    if (request?.lpu.id === resolvedLpuId) return request.lpu.city.name;
+   534→    return lpus?.find((l) => l.id === resolvedLpuId)?.city.name ?? null;
+   535→  }, [resolvedLpuId, doctorLpus, lpus, request]);
+   536→
+   537→  const save = useMutation({
+   538→    mutationFn: () => {
+   539→      const body = {
+   540→        date: form.date,
+   541→        patientName: form.patientName.trim(),
+   542→        doctorId: form.doctorId,
+   543→        lpuId: resolvedLpuId,
+   544→        destination: form.destination.trim() || null,
+   545→        assignedId: form.assignedId || null,
+   546→        doneId: form.doneId || null,
+   547→        comment: form.comment.trim() || null,
+   548→      };
+   549→      return request
+   550→        ? api.put(`/api/app/requests/${request.id}`, body)
+   551→        : api.post("/api/app/requests", body);
+   552→    },
+   553→    onSuccess: () => {
+   554→      toast.success(request ? "Заявка обновлена" : "Заявка зарегистрирована");
+   555→      qc.invalidateQueries({ queryKey: ["requests"] });
+   556→      qc.invalidateQueries({ queryKey: ["doctor-card"] });
+   557→      qc.invalidateQueries({ queryKey: ["dashboard"] });
+   558→      onOpenChange(false);
+   559→    },
+   560→    onError: (e: Error) => toast.error(e.message),
+   561→  });
+   562→
+   563→  return (
+   564→    <Dialog open onOpenChange={onOpenChange}>
+   565→      <DialogContent className="max-h-[calc(100dvh-4rem)] overflow-y-auto sm:max-w-lg">
+   566→        <DialogHeader>
+   567→          <DialogTitle className="font-display text-brand">
+   568→            {request ? "Карточка заявки" : "Регистрация заявки"}
+   569→          </DialogTitle>
+   570→          <DialogDescription>
+   571→            {request
+   572→              ? "Просмотр и редактирование направления пациента на обследование"
+   573→              : "Учет направления пациента на обследование"}
+   574→          </DialogDescription>
+   575→        </DialogHeader>
+   576→
+   577→        <div className="space-y-4 py-1">
+   578→          {/* 1. Дата */}
+   579→          <div className="space-y-1.5">
+   580→            <Label>
+   581→              Дата <span className="text-terra-dark">*</span>
+   582→            </Label>
+   583→            <Input
+   584→              type="date"
+   585→              value={form.date}
+   586→              onChange={(e) => setForm({ ...form, date: e.target.value })}
+   587→            />
+   588→          </div>
+   589→
+   590→          {/* 2. ФИО пациента */}
+   591→          <div className="space-y-1.5">
+   592→            <Label>
+   593→              ФИО пациента <span className="text-terra-dark">*</span>
+   594→            </Label>
+   595→            <Input
+   596→              value={form.patientName}
+   597→              onChange={(e) => setForm({ ...form, patientName: e.target.value })}
+   598→              placeholder="Иванов Иван Иванович"
+   599→            />
+   600→          </div>
+   601→
+   602→          {/* 3. ФИО НВ */}
+   603→          <div className="space-y-1.5">
+   604→            <Label>
+   605→              ФИО НВ <span className="text-terra-dark">*</span>
+   606→            </Label>
+   607→            <Select
+   608→              value={form.doctorId}
+   609→              onValueChange={(v) => {
+   610→                const nd = doctors?.find((d) => d.id === v);
+   611→                const dl = nd?.lpus.map((x) => x.lpu) ?? [];
+   612→                setForm((f) => ({
+   613→                  ...f,
+   614→                  doctorId: v,
+   615→                  lpuId: dl.length === 1 ? dl[0].id : "",
+   616→                }));
+   617→              }}
+   618→            >
+   619→              <SelectTrigger className="bg-white">
+   620→                <SelectValue placeholder="Выберите направляющего врача" />
+   621→              </SelectTrigger>
+   622→              <SelectContent className="max-h-72">
+   623→                {(doctors ?? []).map((d) => (
+   624→                  <SelectItem key={d.id} value={d.id}>
+   625→                    {d.fullName}
+   626→                  </SelectItem>
+   627→                ))}
+   628→              </SelectContent>
+   629→            </Select>
+   630→          </div>
+   631→
+   632→          {/* 4. ЛПУ и город — автозаполнение из карточки НВ */}
+   633→          <div className="space-y-1.5">
+   634→            <Label>
+   635→              ЛПУ <span className="text-terra-dark">*</span>
+   636→            </Label>
+   637→            {lpuMode === "none" && (
+   638→              <p className="text-xs text-muted-foreground">
+   639→                Сначала выберите НВ — ЛПУ подставится из его карточки
+   640→              </p>
+   641→            )}
+   642→            {lpuMode === "single" && (
+   643→              <>
+   644→                <Input
+   645→                  disabled
+   646→                  readOnly
+   647→                  value={
+   648→                    doctorLpus[0] ? `${doctorLpus[0].name} · ${doctorLpus[0].city.name}` : "—"
+   649→                  }
+   650→                  className="bg-white text-muted-foreground"
+   651→                />
+   652→                <p className="text-[11px] text-muted-foreground">
+   653→                  Единственное ЛПУ врача — подставлено автоматически
+   654→                </p>
+   655→              </>
+   656→            )}
+   657→            {lpuMode === "multi" && (
+   658→              <Select
+   659→                value={form.lpuId}
+   660→                onValueChange={(v) => setForm({ ...form, lpuId: v })}
+   661→              >
+   662→                <SelectTrigger className="bg-white">
+   663→                  <SelectValue placeholder="Выберите ЛПУ из привязок НВ" />
+   664→                </SelectTrigger>
+   665→                <SelectContent className="max-h-72">
+   666→                  {multiOptions.map((l) => (
+   667→                    <SelectItem key={l.id} value={l.id}>
+   668→                      {l.name} · {l.city.name}
+   669→                    </SelectItem>
+   670→                  ))}
+   671→                </SelectContent>
+   672→              </Select>
+   673→            )}
+   674→            {lpuMode === "free" && (
+   675→              <Select
+   676→                value={form.lpuId}
+   677→                onValueChange={(v) => setForm({ ...form, lpuId: v })}
+   678→              >
+   679→                <SelectTrigger className="bg-white">
+   680→                  <SelectValue placeholder="У НВ нет привязок — выберите ЛПУ" />
+   681→                </SelectTrigger>
+   682→                <SelectContent className="max-h-72">
+   683→                  {(lpus ?? []).map((l) => (
+   684→                    <SelectItem key={l.id} value={l.id}>
+   685→                      {l.name} · {l.city.name}
+   686→                    </SelectItem>
+   687→                  ))}
+   688→                </SelectContent>
+   689→              </Select>
+   690→            )}
+   691→            {lpuCity && (
+   692→              <p className="text-[11px] text-muted-foreground">Город: {lpuCity}</p>
+   693→            )}
+   694→          </div>
+   695→
+   696→          {/* 5. Куда направление */}
+   697→          <div className="space-y-1.5">
+   698→            <Label>Куда направление</Label>
+   699→            <Input
+   700→              value={form.destination}
+   701→              onChange={(e) => setForm({ ...form, destination: e.target.value })}
+   702→              placeholder="Опционально — отделение, кабинет"
+   703→            />
+   704→          </div>
+   705→
+   706→          {/* 6. Что назначено */}
+   707→          <div className="space-y-1.5">
+   708→            <Label>
+   709→              Что назначено <span className="text-terra-dark">*</span>
+   710→            </Label>
+   711→            <Select
+   712→              value={form.assignedId}
+   713→              onValueChange={(v) => setForm({ ...form, assignedId: v })}
+   714→            >
+   715→              <SelectTrigger className="bg-white">
+   716→                <SelectValue
+   717→                  placeholder={
+   718→                    nomenclature?.length ? "Выберите позицию номенклатуры" : "Справочник номенклатуры пуст"
+   719→                  }
+   720→                />
+   721→              </SelectTrigger>
+   722→              <SelectContent className="max-h-72">
+   723→                {(nomenclature ?? []).map((n) => (
+   724→                  <SelectItem key={n.id} value={n.id}>
+   725→                    {n.name}
+   726→                  </SelectItem>
+   727→                ))}
+   728→              </SelectContent>
+   729→            </Select>
+   730→          </div>
+   731→
+   732→          {/* 7. Что сделано (опционально — можно заполнить позже) */}
+   733→          <div className="space-y-1.5">
+   734→            <Label>Что сделано</Label>
+   735→            <Select
+   736→              value={form.doneId || NONE}
+   737→              onValueChange={(v) => setForm({ ...form, doneId: v === NONE ? "" : v })}
+   738→            >
+   739→              <SelectTrigger className="bg-white">
+   740→                <SelectValue placeholder="Пока не выполнено" />
+   741→              </SelectTrigger>
+   742→              <SelectContent className="max-h-72">
+   743→                <SelectItem value={NONE}>Пока не выполнено</SelectItem>
+   744→                {(nomenclature ?? []).map((n) => (
+   745→                  <SelectItem key={n.id} value={n.id}>
+   746→                    {n.name}
+   747→                  </SelectItem>
+   748→                ))}
+   749→              </SelectContent>
+   750→            </Select>
+   751→            <p className="text-[11px] text-muted-foreground">
+   752→              Опционально — можно заполнить позже при редактировании заявки
+   753→            </p>
+   754→          </div>
+   755→
+   756→          {/* 8. Комментарий (опционально) */}
+   757→          <div className="space-y-1.5">
+   758→            <Label>Комментарий</Label>
+   759→            <Textarea
+   760→              rows={2}
+   761→              value={form.comment}
+   762→              onChange={(e) => setForm({ ...form, comment: e.target.value })}
+   763→              placeholder="Опционально — заметки по заявке, договоренности…"
+   764→            />
+   765→          </div>
+   766→        </div>
+   767→
+   768→        <DialogFooter>
+   769→          <Button variant="outline" onClick={() => onOpenChange(false)}>
+   770→            Отмена
+   771→          </Button>
+   772→          <Button
+   773→            onClick={() => save.mutate()}
+   774→            disabled={
+   775→              !form.date ||
+   776→              !form.patientName.trim() ||
+   777→              !form.doctorId ||
+   778→              !resolvedLpuId ||
+   779→              !form.assignedId ||
+   780→              save.isPending
+   781→            }
+   782→            className="bg-azure hover:bg-azure-dark"
+   783→          >
+   784→            {save.isPending && <ClipboardList className="h-4 w-4 animate-spin" strokeWidth={2} />}
+   785→            {request ? "Сохранить" : "Зарегистрировать"}
+   786→          </Button>
+   787→        </DialogFooter>
+   788→      </DialogContent>
+   789→    </Dialog>
+   790→  );
+   791→}
+   792→

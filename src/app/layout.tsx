@@ -20,7 +20,6 @@ const montserrat = Montserrat({
   weight: ["300", "400", "500", "600", "700"],
   display: "swap",
 });
-
 export const metadata: Metadata = {
   title: "МРТ ТОЧНО · CRM направляющих врачей",
   description:

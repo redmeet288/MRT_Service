@@ -76,6 +76,7 @@ model Nomenclature {
 
   requestsAssigned Request[] @relation("AssignedNomenclature")
   requestsDone     Request[] @relation("DoneNomenclature")
+  requestItems     RequestNomenclatureItem[]
   @@unique([name, category])
 }
 
@@ -90,6 +91,27 @@ model CooperationStatus {
   doctors   Doctor[]
 }
 
+/// Справочник специализаций врачей (доработка итерации 1.2):
+/// используется в карточке НВ — множественный выбор
+model Specialization {
+  id        String   @id @default(uuid())
+  name      String   @unique
+  isActive  Boolean  @default(true)
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  doctors   DoctorSpecialization[]
+}
+
+/// Связь НВ ↔ Специализация (многие ко многим, в карточке НВ — несколько позиций)
+model DoctorSpecialization {
+  doctorId        String
+  doctor          Doctor        @relation(fields: [doctorId], references: [id], onDelete: Cascade)
+  specializationId String
+  specialization  Specialization @relation(fields: [specializationId], references: [id], onDelete: Cascade)
+  @@id([doctorId, specializationId])
+}
+
 /// НВ (Направляющий врач) — ключевая сущность CRM
 model Doctor {
   id             String   @id @default(uuid())
@@ -98,11 +120,15 @@ model Doctor {
   birthDate      DateTime?
   statusId       String?
   status         CooperationStatus? @relation(fields: [statusId], references: [id])
-  mpId           String
-  mp             User     @relation("DoctorMP", fields: [mpId], references: [id])
+  // МП может быть не назначен: оператор создает НВ только с ФИО,
+  // МП затем закрепляет врача за собой (доработка этапа 1.1)
+  mpId           String?
+  mp             User?    @relation("DoctorMP", fields: [mpId], references: [id])
   cityId         String?
   city           City?    @relation(fields: [cityId], references: [id])
   comment        String?
+  // График работы НВ (доработка 1.2) — свободный текст: «Пн–Пт, 9:00–15:00»
+  workSchedule   String?
 
   // —— Задел под бонусную систему (этап 2): скрыты/неактивны на старте ——
   bonusType      String?  // CASH | ACCUMULATIVE
@@ -113,6 +139,7 @@ model Doctor {
   updatedAt      DateTime @updatedAt
 
   lpus           DoctorLpu[]
+  specializations DoctorSpecialization[]
   visits         Visit[]
   requests       Request[]
   bonusTransactions BonusTransaction[]
@@ -156,23 +183,45 @@ model Request {
   doctor         Doctor   @relation(fields: [doctorId], references: [id])
   lpuId          String
   lpu            Lpu      @relation(fields: [lpuId], references: [id])
-  destination    String? // Куда направление
-  assignedId     String? // Что назначено (Номенклатура)
+  // Куда направление (доработка 1.2): пустое значение при создании
+  // автоматически заменяется на «МРТ ТОЧНО»
+  destination    String? 
+  assignedId     String? // LEGACY (первая позиция «Что назначено») — совместимость
   assigned       Nomenclature? @relation("AssignedNomenclature", fields: [assignedId], references: [id])
-  doneId         String? // Что сделано (Номенклатура)
+  doneId         String? // LEGACY (первая позиция «Что сделано») — совместимость
   done           Nomenclature? @relation("DoneNomenclature", fields: [doneId], references: [id])
   authorId       String
   author         User     @relation("RequestAuthor", fields: [authorId], references: [id])
 
+  // Мультиноменклатура (доработка 1.2): «Что назначено» и «Что сделано» —
+  // несколько позиций справочника. kind: ASSIGNED | DONE
+  items          RequestNomenclatureItem[]
+
   // Задел: «Начисленный бонус» (колонка на старте скрыта, рассчитывается
   // отдельным журналом проводок, а не «на лету»)
   bonusAmount    Float?
+
+  // Свободный комментарий к заявке (доработка этапа 1.1)
+  comment        String?
 
   createdAt      DateTime @default(now())
   updatedAt      DateTime @updatedAt
   @@index([date])
   @@index([doctorId])
   @@index([lpuId])
+}
+
+/// Позиция номенклатуры в заявке: «Что назначено» (ASSIGNED)
+/// или «Что сделано» (DONE) — несколько позиций на заявку
+model RequestNomenclatureItem {
+  id             String       @id @default(uuid())
+  requestId      String
+  request        Request      @relation(fields: [requestId], references: [id], onDelete: Cascade)
+  nomenclatureId String
+  nomenclature   Nomenclature @relation(fields: [nomenclatureId], references: [id])
+  kind           String       // ASSIGNED | DONE
+  @@index([requestId])
+  @@index([nomenclatureId])
 }
 
 /// Задел под модуль лояльности (этап 2): журнал проводок с аудитом.

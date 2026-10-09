@@ -1,12 +1,21 @@
 "use client";
 
-import { useState } from "react";
+import { useMemo, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useSession } from "next-auth/react";
 import { toast } from "sonner";
 import { api } from "@/lib/api-client";
 import type { Role, UserItem } from "@/lib/types";
-import { SectionCard, EmptyState, DeleteButton, RowsSkeleton } from "@/components/shared/ui-bits";
+import {
+  SectionCard,
+  EmptyState,
+  DeleteButton,
+  RowsSkeleton,
+  SortButton,
+  applySort,
+  cycleSort,
+  type SortState,
+} from "@/components/shared/ui-bits";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -66,11 +75,34 @@ function UsersTable({ currentUserId }: { currentUserId: string }) {
   const [createOpen, setCreateOpen] = useState(false);
   const [editing, setEditing] = useState<UserItem | null>(null);
   const [form, setForm] = useState<UserForm>(EMPTY_FORM);
+  // Сортировка по клику на заголовок столбца (доработка 1.3)
+  const [sort, setSort] = useState<SortState | null>(null);
+  const handleSort = (field: string) => setSort((s) => cycleSort(s, field));
 
   const { data: users, isLoading } = useQuery<UserItem[]>({
     queryKey: ["users"],
     queryFn: () => api.get<UserItem[]>("/api/app/users"),
   });
+
+  // Клиентская сортировка: имя / роль / курируемые НВ / статус
+  const sortedUsers = useMemo(
+    () =>
+      applySort(users ?? [], sort, (u, field) => {
+        switch (field) {
+          case "name":
+            return u.name;
+          case "role":
+            return u.role === "MP" ? 0 : 1;
+          case "doctors":
+            return u.role === "MP" ? u._count?.doctors ?? 0 : -1;
+          case "active":
+            return u.isActive ? 1 : 0;
+          default:
+            return null;
+        }
+      }),
+    [users, sort]
+  );
 
   const create = useMutation({
     mutationFn: () =>
@@ -149,15 +181,23 @@ function UsersTable({ currentUserId }: { currentUserId: string }) {
             <Table>
               <TableHeader className="sticky top-0 bg-white z-10">
                 <TableRow className="hover:bg-transparent">
-                  <TableHead>Имя</TableHead>
-                  <TableHead>Роль</TableHead>
-                  <TableHead>Курируемых НВ</TableHead>
-                  <TableHead>Статус</TableHead>
+                  <TableHead aria-sort={sort?.field === "name" ? (sort.dir === "asc" ? "ascending" : "descending") : "none"}>
+                    <SortButton label="Имя" field="name" sort={sort} onSort={handleSort} />
+                  </TableHead>
+                  <TableHead aria-sort={sort?.field === "role" ? (sort.dir === "asc" ? "ascending" : "descending") : "none"}>
+                    <SortButton label="Роль" field="role" sort={sort} onSort={handleSort} />
+                  </TableHead>
+                  <TableHead aria-sort={sort?.field === "doctors" ? (sort.dir === "asc" ? "ascending" : "descending") : "none"}>
+                    <SortButton label="Курируемых НВ" field="doctors" sort={sort} onSort={handleSort} />
+                  </TableHead>
+                  <TableHead aria-sort={sort?.field === "active" ? (sort.dir === "asc" ? "ascending" : "descending") : "none"}>
+                    <SortButton label="Статус" field="active" sort={sort} onSort={handleSort} />
+                  </TableHead>
                   <TableHead className="w-24" />
                 </TableRow>
               </TableHeader>
               <TableBody>
-                {users.map((u) => (
+                {sortedUsers.map((u) => (
                   <TableRow key={u.id}>
                     <TableCell>
                       <p className="font-medium text-brand">{u.name}</p>
@@ -207,7 +247,7 @@ function UsersTable({ currentUserId }: { currentUserId: string }) {
                           <DeleteButton
                             title={`Деактивировать «${u.name}»?`}
                             description="Пользователь не удаляется, а деактивируется — вход в систему будет заблокирован. МП нельзя деактивировать, пока за ним закреплены врачи. Действие будет зафиксировано в журнале аудита."
-                            onConfirm={() => deactivate.mutateAsync(u.id)}
+                            onConfirm={async () => { await deactivate.mutateAsync(u.id); }}
                           />
                         )}
                       </div>

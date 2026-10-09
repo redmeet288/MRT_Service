@@ -4,12 +4,14 @@ import { useMemo, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useSession } from "next-auth/react";
 import { toast } from "sonner";
+import { format } from "date-fns";
 import { api, qs } from "@/lib/api-client";
 import type {
   CityData,
   DoctorItem,
   NomenclatureItem,
   RequestItem,
+  Role,
   UserBasic,
 } from "@/lib/types";
 import {
@@ -18,11 +20,16 @@ import {
   DeleteButton,
   RowsSkeleton,
   fmtDate,
+  SortableTh,
+  cycleSort,
+  applySort,
+  type SortState,
 } from "@/components/shared/ui-bits";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
-import { Badge } from "@/components/ui/badge";
+import { Textarea } from "@/components/ui/textarea";
+import { Checkbox } from "@/components/ui/checkbox";
 import {
   Dialog,
   DialogContent,
@@ -38,24 +45,25 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select";
-import {
-  Table,
-  TableBody,
-  TableCell,
-  TableHead,
-  TableHeader,
-  TableRow,
-} from "@/components/ui/table";
-import { ToggleGroup, ToggleGroupItem } from "@/components/ui/toggle-group";
-import { ClipboardList, Pencil, Plus, RotateCcw } from "lucide-react";
+import { ClipboardList, MessageSquare, Pencil, Plus, RotateCcw } from "lucide-react";
+import { useUiStore } from "@/store/ui";
 
 const ALL = "__all__";
-const NONE = "__none__";
+
+/** Пользователь сессии: JWT-колбэк кладет uid и role (типизация next-auth по умолчанию их не знает) */
+type SessionUserWithRole = { uid?: string; role?: Role } | undefined;
 
 /** Сегодняшняя дата в формате YYYY-MM-DD (локальная зона) */
 function todayISO(): string {
   const d = new Date();
   return new Date(d.getTime() - d.getTimezoneOffset() * 60000).toISOString().slice(0, 10);
+}
+
+/** ISO-дата (из drill-down дашборда) → yyyy-MM-dd для input[type=date] */
+function isoToYMD(iso: string | undefined): string {
+  if (!iso) return "";
+  const d = new Date(iso);
+  return Number.isNaN(d.getTime()) ? "" : format(d, "yyyy-MM-dd");
 }
 
 interface RequestFilters {
@@ -64,21 +72,55 @@ interface RequestFilters {
   doctorId: string;
   lpuId: string;
   mpId: string;
-  done: string; // "" — все, "0" — только невыполненные, "1" — только выполненные
+  /** Заполняется только drill-down-переходом с дашборда (отдельного контрола в разделе нет) */
+  assignedId: string;
 }
 
-const emptyFilters: RequestFilters = { from: "", to: "", doctorId: "", lpuId: "", mpId: "", done: "" };
+const emptyFilters: RequestFilters = {
+  from: "",
+  to: "",
+  doctorId: "",
+  lpuId: "",
+  mpId: "",
+  assignedId: "",
+};
 
 /* ============================================================
-   Вьюха «Заявки» — учет направлений
+   Вьюха «Заявки» — учет направлений (список в стиле 1С)
    ============================================================ */
 export function RequestsView() {
   const qc = useQueryClient();
   const { data: session } = useSession();
-  const isMP = session?.user?.role === "MP";
-  const [filters, setFilters] = useState<RequestFilters>(emptyFilters);
+  const isMP = (session?.user as SessionUserWithRole)?.role === "MP";
+
+  // Drill-down из дашборда: одноразовое поглощение фильтров в инициализаторе
+  // состояния (без useEffect — правило react-hooks/set-state-in-effect)
+  const [navFilters] = useState(() => useUiStore.getState().consumeRequestsFilters());
+  const [filters, setFilters] = useState<RequestFilters>(() => ({
+    ...emptyFilters,
+    ...(navFilters
+      ? {
+          from: isoToYMD(navFilters.from),
+          to: isoToYMD(navFilters.to),
+          mpId: navFilters.mpId ?? "",
+          lpuId: navFilters.lpuId ?? "",
+          doctorId: navFilters.doctorId ?? "",
+          assignedId: navFilters.assignedId ?? "",
+        }
+      : {}),
+  }));
   const [formOpen, setFormOpen] = useState(false);
   const [editing, setEditing] = useState<RequestItem | null>(null);
+
+  // Сортировка столбцов таблицы (клик по заголовку: возр. → убыв. → сброс)
+  const [sort, setSort] = useState<SortState | null>(null);
+  const handleSort = (field: string) => setSort(cycleSort(sort, field));
+
+  /** Открыть карточку заявки (= диалог редактирования) */
+  function openCard(r: RequestItem) {
+    setEditing(r);
+    setFormOpen(true);
+  }
 
   const { data: requests, isLoading } = useQuery<RequestItem[]>({
     queryKey: [
@@ -89,7 +131,7 @@ export function RequestsView() {
       filters.doctorId,
       filters.lpuId,
       filters.mpId,
-      filters.done,
+      filters.assignedId,
     ],
     queryFn: () =>
       api.get(
@@ -99,7 +141,7 @@ export function RequestsView() {
           doctorId: filters.doctorId,
           lpuId: filters.lpuId,
           mpId: filters.mpId,
-          done: filters.done,
+          assignedId: filters.assignedId,
         })}`
       ),
   });
@@ -118,6 +160,34 @@ export function RequestsView() {
 
   const mps = useMemo(() => (users ?? []).filter((u) => u.role === "MP"), [users]);
 
+  // Отсортированные строки таблицы (клиентская сортировка; пустые значения — в конец)
+  const rows = useMemo(
+    () =>
+      applySort(requests ?? [], sort, (r, f) => {
+        switch (f) {
+          case "date":
+            return r.date;
+          case "patient":
+            return r.patientName;
+          case "doctor":
+            return r.doctor.fullName;
+          case "lpu":
+            return r.lpu.name;
+          case "destination":
+            return r.destination ?? "";
+          case "assigned":
+            return r.assignedItems.map((i) => i.name).join(", ");
+          case "done":
+            return r.doneItems.map((i) => i.name).join(", ");
+          case "author":
+            return r.author?.name ?? "";
+          default:
+            return null;
+        }
+      }),
+    [requests, sort]
+  );
+
   // Удаление заявки — только МП
   const remove = useMutation({
     mutationFn: (id: string) => api.del(`/api/app/requests/${id}`),
@@ -127,6 +197,7 @@ export function RequestsView() {
       qc.invalidateQueries({ queryKey: ["doctor-card"] });
       qc.invalidateQueries({ queryKey: ["dashboard"] });
     },
+    onError: (e: Error) => toast.error(e.message),
   });
 
   return (
@@ -224,29 +295,6 @@ export function RequestsView() {
                 </SelectContent>
               </Select>
             </div>
-            <div className="space-y-1.5">
-              <Label className="text-xs text-muted-foreground">Выполнение</Label>
-              <ToggleGroup
-                type="single"
-                variant="outline"
-                size="sm"
-                className="rounded-lg bg-white"
-                value={filters.done === "" ? "all" : filters.done}
-                onValueChange={(v) => {
-                  if (v) setFilters((f) => ({ ...f, done: v === "all" ? "" : v }));
-                }}
-              >
-                <ToggleGroupItem value="all" className="px-3 text-xs">
-                  Все
-                </ToggleGroupItem>
-                <ToggleGroupItem value="0" className="px-3 text-xs">
-                  Невыполненные
-                </ToggleGroupItem>
-                <ToggleGroupItem value="1" className="px-3 text-xs">
-                  Выполненные
-                </ToggleGroupItem>
-              </ToggleGroup>
-            </div>
             <Button
               variant="ghost"
               size="sm"
@@ -257,7 +305,7 @@ export function RequestsView() {
             </Button>
           </div>
 
-          {/* Таблица заявок */}
+          {/* Таблица заявок — в стиле 1С; клик по строке открывает карточку заявки */}
           {isLoading ? (
             <RowsSkeleton rows={6} />
           ) : !requests?.length ? (
@@ -271,89 +319,131 @@ export function RequestsView() {
                 Найдено заявок: {requests.length}
                 {requests.length >= 5000 && " (показаны первые 5000)"}
               </p>
-              <div className="max-h-96 overflow-y-auto rounded-lg border border-border">
-                <Table>
-                  <TableHeader className="sticky top-0 z-10 bg-white">
-                    <TableRow className="hover:bg-transparent">
-                      <TableHead className="w-24">Дата</TableHead>
-                      <TableHead>Пациент</TableHead>
-                      <TableHead>НВ</TableHead>
-                      <TableHead>ЛПУ</TableHead>
-                      <TableHead>Куда направление</TableHead>
-                      <TableHead>Что назначено</TableHead>
-                      <TableHead>Что сделано</TableHead>
-                      <TableHead>Автор</TableHead>
-                      <TableHead className="w-20" />
-                    </TableRow>
-                  </TableHeader>
-                  <TableBody>
-                    {requests.map((r) => (
-                      <TableRow key={r.id}>
-                        <TableCell className="whitespace-nowrap text-muted-foreground">
-                          {fmtDate(r.date)}
-                        </TableCell>
-                        <TableCell className="font-medium text-brand">{r.patientName}</TableCell>
-                        <TableCell>
-                          <span className="text-sm">{r.doctor.fullName}</span>
-                          <span className="block text-[11px] text-muted-foreground">
-                            МП: {r.doctor.mp.name}
-                          </span>
-                        </TableCell>
-                        <TableCell>
-                          <span className="text-sm">{r.lpu.name}</span>
-                          <span className="block text-[11px] text-muted-foreground">
-                            {r.lpu.city.name}
-                          </span>
-                        </TableCell>
-                        <TableCell className="text-sm text-muted-foreground">
-                          {r.destination ?? "—"}
-                        </TableCell>
-                        <TableCell className="text-sm">{r.assigned?.name ?? "—"}</TableCell>
-                        <TableCell>
-                          {r.done ? (
-                            <span className="text-sm">{r.done.name}</span>
-                          ) : (
-                            <Badge className="border-transparent bg-terra-light text-[10px] text-terra-dark hover:bg-terra-light">
-                              Ожидает
-                            </Badge>
-                          )}
-                        </TableCell>
-                        <TableCell className="text-sm text-muted-foreground">
-                          {r.author?.name ?? "—"}
-                        </TableCell>
-                        <TableCell>
-                          <div className="flex items-center gap-1">
-                            <Button
-                              variant="ghost"
-                              size="icon"
-                              className="h-8 w-8 text-sky hover:text-brand"
-                              onClick={() => {
-                                setEditing(r);
-                                setFormOpen(true);
-                              }}
-                              aria-label="Редактировать заявку"
-                              title="Редактировать"
-                            >
-                              <Pencil className="h-4 w-4" strokeWidth={2} />
-                            </Button>
-                            {isMP && (
-                              <DeleteButton
-                                title={`Удалить заявку по пациенту «${r.patientName}»?`}
-                                onConfirm={async () => {
-                                  try {
-                                    await remove.mutateAsync(r.id);
-                                  } catch (e) {
-                                    toast.error((e as Error).message);
-                                  }
+              <div className="onec-window">
+                <div className="max-h-96 overflow-y-auto">
+                  <table className="onec-table">
+                    <thead>
+                      <tr>
+                        <SortableTh
+                          label="Дата"
+                          field="date"
+                          sort={sort}
+                          onSort={handleSort}
+                          className="w-24"
+                        />
+                        <SortableTh label="Пациент" field="patient" sort={sort} onSort={handleSort} />
+                        <SortableTh label="НВ" field="doctor" sort={sort} onSort={handleSort} />
+                        <SortableTh label="ЛПУ" field="lpu" sort={sort} onSort={handleSort} />
+                        <SortableTh
+                          label="Куда направление"
+                          field="destination"
+                          sort={sort}
+                          onSort={handleSort}
+                        />
+                        <SortableTh
+                          label="Что назначено"
+                          field="assigned"
+                          sort={sort}
+                          onSort={handleSort}
+                        />
+                        <SortableTh
+                          label="Что сделано"
+                          field="done"
+                          sort={sort}
+                          onSort={handleSort}
+                        />
+                        <SortableTh label="Автор" field="author" sort={sort} onSort={handleSort} />
+                        <th className="w-20" />
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {rows.map((r) => (
+                        <tr
+                          key={r.id}
+                          className="cursor-pointer"
+                          onClick={() => openCard(r)}
+                          title="Открыть карточку заявки"
+                        >
+                          <td className="whitespace-nowrap text-muted-foreground">
+                            {fmtDate(r.date)}
+                          </td>
+                          <td className="font-medium text-brand">
+                            <span className="inline-flex items-center gap-1.5">
+                              {r.patientName}
+                              {r.comment && (
+                                <span
+                                  title={r.comment}
+                                  className="inline-flex text-sky"
+                                  aria-label="Заявка с комментарием"
+                                >
+                                  <MessageSquare className="h-3.5 w-3.5" strokeWidth={2} />
+                                </span>
+                              )}
+                            </span>
+                          </td>
+                          <td>
+                            <span className="text-sm">{r.doctor.fullName}</span>
+                            <span className="block text-[11px] text-muted-foreground">
+                              МП: {r.doctor.mp?.name ?? "—"}
+                            </span>
+                          </td>
+                          <td>
+                            <span className="text-sm">{r.lpu.name}</span>
+                            <span className="block text-[11px] text-muted-foreground">
+                              {r.lpu.city.name}
+                            </span>
+                          </td>
+                          <td className="text-sm text-muted-foreground">
+                            {r.destination ?? "—"}
+                          </td>
+                          <td className="text-sm">
+                            {r.assignedItems.map((i) => i.name).join(", ") || "—"}
+                          </td>
+                          <td className="text-sm">
+                            {r.doneItems.map((i) => i.name).join(", ") || "—"}
+                          </td>
+                          <td className="text-sm text-muted-foreground">
+                            {r.author?.name ?? "—"}
+                          </td>
+                          <td>
+                            <div className="flex items-center gap-1">
+                              <Button
+                                variant="ghost"
+                                size="icon"
+                                className="h-8 w-8 text-sky hover:text-brand"
+                                onClick={(e) => {
+                                  e.stopPropagation();
+                                  openCard(r);
                                 }}
-                              />
-                            )}
-                          </div>
-                        </TableCell>
-                      </TableRow>
-                    ))}
-                  </TableBody>
-                </Table>
+                                aria-label="Редактировать заявку"
+                                title="Редактировать"
+                              >
+                                <Pencil className="h-4 w-4" strokeWidth={2} />
+                              </Button>
+                              {isMP && (
+                                <span
+                                  className="inline-flex"
+                                  onClick={(e) => e.stopPropagation()}
+                                >
+                                  <DeleteButton
+                                    title={`Удалить заявку по пациенту «${r.patientName}»?`}
+                                    onConfirm={async () => {
+                                      try {
+                                        await remove.mutateAsync(r.id);
+                                      } catch (e) {
+                                        toast.error((e as Error).message);
+                                      }
+                                    }}
+                                  />
+                                </span>
+                              )}
+                            </div>
+                          </td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
               </div>
             </>
           )}
@@ -376,8 +466,19 @@ interface RequestFormState {
   doctorId: string;
   lpuId: string;
   destination: string;
-  assignedId: string;
-  doneId: string;
+  /** Мультивыбор из номенклатуры: «Что назначено» — обязателен, «Что сделано» — нет */
+  assignedIds: string[];
+  doneIds: string[];
+  comment: string;
+}
+
+/** Переключение позиции в списке множественного выбора */
+function toggleInList(list: string[], id: string, checked: boolean): string[] {
+  return checked
+    ? list.includes(id)
+      ? list
+      : [...list, id]
+    : list.filter((x) => x !== id);
 }
 
 /** Начальное состояние формы: из заявки при редактировании / пустая (дата — сегодня) при создании */
@@ -389,8 +490,9 @@ function initRequestForm(request: RequestItem | null): RequestFormState {
       doctorId: "",
       lpuId: "",
       destination: "",
-      assignedId: "",
-      doneId: "",
+      assignedIds: [],
+      doneIds: [],
+      comment: "",
     };
   }
   return {
@@ -399,8 +501,9 @@ function initRequestForm(request: RequestItem | null): RequestFormState {
     doctorId: request.doctorId,
     lpuId: request.lpuId,
     destination: request.destination ?? "",
-    assignedId: request.assignedId ?? "",
-    doneId: request.doneId ?? "",
+    assignedIds: request.assignedItems.map((i) => i.id),
+    doneIds: request.doneItems.map((i) => i.id),
+    comment: request.comment ?? "",
   };
 }
 
@@ -471,9 +574,10 @@ function RequestFormDialog({
         patientName: form.patientName.trim(),
         doctorId: form.doctorId,
         lpuId: resolvedLpuId,
-        destination: form.destination.trim() || null,
-        assignedId: form.assignedId || null,
-        doneId: form.doneId || null,
+        destination: form.destination.trim() || "МРТ ТОЧНО",
+        assignedIds: form.assignedIds,
+        doneIds: form.doneIds,
+        comment: form.comment.trim() || null,
       };
       return request
         ? api.put(`/api/app/requests/${request.id}`, body)
@@ -491,19 +595,23 @@ function RequestFormDialog({
 
   return (
     <Dialog open onOpenChange={onOpenChange}>
-      <DialogContent className="sm:max-w-lg">
+      <DialogContent className="max-h-[calc(100dvh-4rem)] overflow-y-auto sm:max-w-lg">
         <DialogHeader>
           <DialogTitle className="font-display text-brand">
-            {request ? "Редактирование заявки" : "Регистрация заявки"}
+            {request ? "Карточка заявки" : "Регистрация заявки"}
           </DialogTitle>
-          <DialogDescription>Учет направления пациента на обследование</DialogDescription>
+          <DialogDescription>
+            {request
+              ? "Просмотр и редактирование направления пациента на обследование"
+              : "Учет направления пациента на обследование"}
+          </DialogDescription>
         </DialogHeader>
 
         <div className="space-y-4 py-1">
           {/* 1. Дата */}
           <div className="space-y-1.5">
             <Label>
-              Дата <span className="text-terra-dark">*</span>
+              Дата <span className="text-azure-dark">*</span>
             </Label>
             <Input
               type="date"
@@ -515,7 +623,7 @@ function RequestFormDialog({
           {/* 2. ФИО пациента */}
           <div className="space-y-1.5">
             <Label>
-              ФИО пациента <span className="text-terra-dark">*</span>
+              ФИО пациента <span className="text-azure-dark">*</span>
             </Label>
             <Input
               value={form.patientName}
@@ -527,7 +635,7 @@ function RequestFormDialog({
           {/* 3. ФИО НВ */}
           <div className="space-y-1.5">
             <Label>
-              ФИО НВ <span className="text-terra-dark">*</span>
+              ФИО НВ <span className="text-azure-dark">*</span>
             </Label>
             <Select
               value={form.doctorId}
@@ -557,7 +665,7 @@ function RequestFormDialog({
           {/* 4. ЛПУ и город — автозаполнение из карточки НВ */}
           <div className="space-y-1.5">
             <Label>
-              ЛПУ <span className="text-terra-dark">*</span>
+              ЛПУ <span className="text-azure-dark">*</span>
             </Label>
             {lpuMode === "none" && (
               <p className="text-xs text-muted-foreground">
@@ -618,64 +726,105 @@ function RequestFormDialog({
             )}
           </div>
 
-          {/* 5. Куда направление */}
+          {/* 5. Куда направление — по умолчанию сохраняется «МРТ ТОЧНО» */}
           <div className="space-y-1.5">
             <Label>Куда направление</Label>
             <Input
               value={form.destination}
               onChange={(e) => setForm({ ...form, destination: e.target.value })}
-              placeholder="Опционально — отделение, кабинет"
+              placeholder="МРТ ТОЧНО"
             />
+            <p className="text-[11px] text-muted-foreground">
+              Если не изменить — сохранится «МРТ ТОЧНО»
+            </p>
           </div>
 
-          {/* 6. Что назначено */}
+          {/* 6. Что назначено — мультивыбор из номенклатуры (обязательно) */}
           <div className="space-y-1.5">
-            <Label>
-              Что назначено <span className="text-terra-dark">*</span>
-            </Label>
-            <Select
-              value={form.assignedId}
-              onValueChange={(v) => setForm({ ...form, assignedId: v })}
-            >
-              <SelectTrigger className="bg-white">
-                <SelectValue
-                  placeholder={
-                    nomenclature?.length ? "Выберите позицию номенклатуры" : "Справочник номенклатуры пуст"
-                  }
-                />
-              </SelectTrigger>
-              <SelectContent className="max-h-72">
-                {(nomenclature ?? []).map((n) => (
-                  <SelectItem key={n.id} value={n.id}>
-                    {n.name}
-                  </SelectItem>
-                ))}
-              </SelectContent>
-            </Select>
+            <div className="flex items-center justify-between">
+              <Label>
+                Что назначено <span className="text-azure-dark">*</span>
+              </Label>
+              <span className="text-[11px] text-muted-foreground">
+                Выбрано: {form.assignedIds.length}
+              </span>
+            </div>
+            <div className="max-h-40 space-y-1 overflow-y-auto rounded-lg border border-border bg-white p-3">
+              {!nomenclature?.length ? (
+                <p className="py-2 text-center text-xs text-muted-foreground">
+                  Справочник номенклатуры пуст — добавьте позиции в разделе «Справочники»
+                </p>
+              ) : (
+                nomenclature.map((n) => (
+                  <label
+                    key={n.id}
+                    className="flex cursor-pointer items-center gap-2.5 rounded-md px-2 py-1.5 hover:bg-sky-light/60"
+                  >
+                    <Checkbox
+                      checked={form.assignedIds.includes(n.id)}
+                      onCheckedChange={(c) =>
+                        setForm((f) => ({
+                          ...f,
+                          assignedIds: toggleInList(f.assignedIds, n.id, c === true),
+                        }))
+                      }
+                      aria-label={`Назначить ${n.name}`}
+                    />
+                    <span className="text-sm text-brand">{n.name}</span>
+                  </label>
+                ))
+              )}
+            </div>
           </div>
 
-          {/* 7. Что сделано (опционально — можно заполнить позже) */}
+          {/* 7. Что сделано — мультивыбор из номенклатуры (опционально) */}
           <div className="space-y-1.5">
-            <Label>Что сделано</Label>
-            <Select
-              value={form.doneId || NONE}
-              onValueChange={(v) => setForm({ ...form, doneId: v === NONE ? "" : v })}
-            >
-              <SelectTrigger className="bg-white">
-                <SelectValue placeholder="Пока не выполнено" />
-              </SelectTrigger>
-              <SelectContent className="max-h-72">
-                <SelectItem value={NONE}>Пока не выполнено</SelectItem>
-                {(nomenclature ?? []).map((n) => (
-                  <SelectItem key={n.id} value={n.id}>
-                    {n.name}
-                  </SelectItem>
-                ))}
-              </SelectContent>
-            </Select>
+            <div className="flex items-center justify-between">
+              <Label>Что сделано</Label>
+              <span className="text-[11px] text-muted-foreground">
+                Выбрано: {form.doneIds.length}
+              </span>
+            </div>
+            <div className="max-h-40 space-y-1 overflow-y-auto rounded-lg border border-border bg-white p-3">
+              {!nomenclature?.length ? (
+                <p className="py-2 text-center text-xs text-muted-foreground">
+                  Справочник номенклатуры пуст — добавьте позиции в разделе «Справочники»
+                </p>
+              ) : (
+                nomenclature.map((n) => (
+                  <label
+                    key={n.id}
+                    className="flex cursor-pointer items-center gap-2.5 rounded-md px-2 py-1.5 hover:bg-sky-light/60"
+                  >
+                    <Checkbox
+                      checked={form.doneIds.includes(n.id)}
+                      onCheckedChange={(c) =>
+                        setForm((f) => ({
+                          ...f,
+                          doneIds: toggleInList(f.doneIds, n.id, c === true),
+                        }))
+                      }
+                      aria-label={`Отметить выполненным ${n.name}`}
+                    />
+                    <span className="text-sm text-brand">{n.name}</span>
+                  </label>
+                ))
+              )}
+            </div>
             <p className="text-[11px] text-muted-foreground">
               Опционально — можно заполнить позже при редактировании заявки
             </p>
+          </div>
+
+          {/* 8. Комментарий (опционально) */}
+          <div className="space-y-1.5">
+            <Label>Комментарий</Label>
+            <Textarea
+              rows={2}
+              value={form.comment}
+              onChange={(e) => setForm({ ...form, comment: e.target.value })}
+              placeholder="Опционально — заметки по заявке, договоренности…"
+            />
           </div>
         </div>
 
@@ -690,7 +839,7 @@ function RequestFormDialog({
               !form.patientName.trim() ||
               !form.doctorId ||
               !resolvedLpuId ||
-              !form.assignedId ||
+              !form.assignedIds.length ||
               save.isPending
             }
             className="bg-azure hover:bg-azure-dark"
