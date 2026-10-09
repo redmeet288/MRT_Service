@@ -40,7 +40,9 @@ import { VISIT_STATUS_LABELS } from "@/lib/types";
 import { EmptyState, RowsSkeleton, StatusChip } from "@/components/shared/ui-bits";
 import { VisitDialog } from "@/components/views/visit-dialog";
 import { useUiStore } from "@/store/ui";
+import { useIsMobile } from "@/hooks/use-mobile";
 import { Button } from "@/components/ui/button";
+import { Badge } from "@/components/ui/badge";
 import { Label } from "@/components/ui/label";
 import {
   Select,
@@ -55,9 +57,11 @@ import {
   CalendarDays,
   CalendarPlus,
   CalendarRange,
+  ChevronDown,
   ChevronLeft,
   ChevronRight,
   Plus,
+  SlidersHorizontal,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
 
@@ -76,6 +80,13 @@ const CHIP_BG: Record<VisitStatus, string> = {
   PLANNED: "bg-azure hover:bg-azure-dark",
   CONDUCTED: "bg-brand hover:bg-brand-dark",
   CANCELLED: "bg-terra hover:bg-terra-dark",
+};
+
+/** Цвет точки-индикатора визита в мобильном месяце — по статусу */
+const DOT_BG: Record<VisitStatus, string> = {
+  PLANNED: "bg-azure",
+  CONDUCTED: "bg-brand",
+  CANCELLED: "bg-terra",
 };
 
 const cap = (s: string) => s.charAt(0).toUpperCase() + s.slice(1);
@@ -355,6 +366,9 @@ export function CalendarView() {
     moveVisit.mutate({ id: visit.id, date: newDate });
   }
 
+  // —— Мобильный режим: без drag&drop (перенос — через карточку визита) ——
+  const isMobile = useIsMobile();
+
   const periodTitle =
     mode === "month"
       ? cap(format(cursor, "LLLL yyyy", { locale: ru }))
@@ -370,7 +384,7 @@ export function CalendarView() {
     !visitsQuery.isLoading && !visitsQuery.error && (visitsQuery.data ?? []).length === 0;
 
   return (
-    <div className="space-y-6">
+    <div className="space-y-4 md:space-y-6">
       {/* —— Фильтры —— */}
       <SectionFilters
         mps={mps}
@@ -385,26 +399,26 @@ export function CalendarView() {
       />
 
       {/* —— Календарь —— */}
-      <section className="rounded-xl border border-border bg-white p-6 shadow-[0_2px_12px_rgba(25,70,136,0.05)]">
+      <section className="rounded-xl border border-border bg-white p-3 shadow-[0_2px_12px_rgba(25,70,136,0.05)] md:p-6">
         {/* Навигация периода */}
-        <div className="mb-5 flex flex-wrap items-center justify-between gap-3">
-          <div className="flex items-center gap-2">
+        <div className="mb-4 flex flex-wrap items-center justify-between gap-x-3 gap-y-2 md:mb-5">
+          <div className="flex min-w-0 flex-1 items-center gap-0.5 md:flex-none md:gap-2">
             <Button
               variant="ghost"
               size="icon"
-              className="h-8 w-8 text-brand hover:bg-sky-light"
+              className="h-10 w-10 shrink-0 text-brand hover:bg-sky-light md:h-8 md:w-8"
               onClick={() => step(-1)}
               aria-label="Предыдущий период"
             >
               <ChevronLeft className="h-4 w-4" strokeWidth={2} />
             </Button>
-            <h2 className="font-display text-lg font-bold text-brand min-w-[190px] text-center">
+            <h2 className="font-display min-w-0 flex-1 truncate text-center text-[15px] font-bold text-brand md:min-w-[190px] md:flex-none md:text-lg">
               {periodTitle}
             </h2>
             <Button
               variant="ghost"
               size="icon"
-              className="h-8 w-8 text-brand hover:bg-sky-light"
+              className="h-10 w-10 shrink-0 text-brand hover:bg-sky-light md:h-8 md:w-8"
               onClick={() => step(1)}
               aria-label="Следующий период"
             >
@@ -413,7 +427,7 @@ export function CalendarView() {
             <Button
               variant="outline"
               size="sm"
-              className="ml-2 h-8 border-sky/40 text-brand hover:bg-sky-light"
+              className="ml-1 h-10 shrink-0 border-sky/40 px-3 text-brand hover:bg-sky-light md:ml-2 md:h-8"
               onClick={() => setCursor(new Date())}
             >
               Сегодня
@@ -426,23 +440,23 @@ export function CalendarView() {
             onValueChange={(v) => {
               if (v === "month" || v === "week" || v === "day") setMode(v);
             }}
-            className="rounded-lg border border-border bg-soft p-1"
+            className="w-full rounded-lg border border-border bg-soft p-1 md:w-auto"
           >
             <ToggleGroupItem
               value="month"
-              className="gap-1.5 rounded-md px-3 text-xs data-[state=on]:bg-sky-light data-[state=on]:text-brand"
+              className="flex-1 justify-center gap-1.5 rounded-md px-3 text-xs data-[state=on]:bg-sky-light data-[state=on]:text-brand md:flex-none"
             >
               <CalendarDays className="h-3.5 w-3.5" strokeWidth={2} /> Месяц
             </ToggleGroupItem>
             <ToggleGroupItem
               value="week"
-              className="gap-1.5 rounded-md px-3 text-xs data-[state=on]:bg-sky-light data-[state=on]:text-brand"
+              className="flex-1 justify-center gap-1.5 rounded-md px-3 text-xs data-[state=on]:bg-sky-light data-[state=on]:text-brand md:flex-none"
             >
               <CalendarRange className="h-3.5 w-3.5" strokeWidth={2} /> Неделя
             </ToggleGroupItem>
             <ToggleGroupItem
               value="day"
-              className="gap-1.5 rounded-md px-3 text-xs data-[state=on]:bg-sky-light data-[state=on]:text-brand"
+              className="flex-1 justify-center gap-1.5 rounded-md px-3 text-xs data-[state=on]:bg-sky-light data-[state=on]:text-brand md:flex-none"
             >
               <CalendarClock className="h-3.5 w-3.5" strokeWidth={2} /> День
             </ToggleGroupItem>
@@ -519,8 +533,8 @@ export function CalendarView() {
                   ))}
                 </div>
               ) : (
-                /* —— Сетка недели —— */
-                <div className="grid grid-cols-7 gap-3">
+                /* —— Сетка недели: на мобильном — вертикальный список дней —— */
+                <div className="grid grid-cols-1 gap-2 md:grid-cols-7 md:gap-3">
                   {days.map((day) => (
                     <WeekColumn
                       key={iso(day)}
@@ -551,7 +565,7 @@ export function CalendarView() {
             </DndContext>
 
             {/* Легенда статусов */}
-            <div className="mt-5 flex flex-wrap items-center gap-4 border-t border-border/60 pt-4 text-xs text-muted-foreground">
+            <div className="mt-4 flex flex-wrap items-center gap-3 border-t border-border/60 pt-3 text-[11px] text-muted-foreground md:mt-5 md:gap-4 md:pt-4 md:text-xs">
               <span className="font-medium text-brand">Легенда:</span>
               <span className="inline-flex items-center gap-1.5">
                 <span className="h-2.5 w-2.5 rounded-full bg-azure" /> Запланирован
@@ -566,6 +580,17 @@ export function CalendarView() {
           </>
         )}
       </section>
+
+      {/* —— Плавающая кнопка «Запланировать визит» (мобильный) —— */}
+      <button
+        type="button"
+        onClick={() => openCreateForDay(new Date())}
+        aria-label="Запланировать визит"
+        className="tap-clean md:hidden fixed right-4 z-30 flex h-14 w-14 items-center justify-center rounded-full bg-azure text-white shadow-[0_6px_20px_rgba(1,150,210,0.45)] transition-colors active:bg-azure-dark"
+        style={{ bottom: "calc(4.5rem + env(safe-area-inset-bottom))" }}
+      >
+        <CalendarPlus className="h-6 w-6" strokeWidth={2.4} />
+      </button>
 
       {/* —— Общий диалог создания/редактирования визита —— */}
       {dialogOpen && (
@@ -587,7 +612,7 @@ type EditVisit = (v: VisitItem) => void;
 type OpenDay = (day: Date) => void;
 type CreateForDay = (day: Date, time?: string) => void;
 
-/** Чип визита в месячной сетке — перетаскиваемый, клик открывает карточку */
+/** Чип визита в месячной сетке — перетаскиваемый (десктоп), клик открывает карточку */
 function MonthVisitChip({
   visit,
   dim,
@@ -597,6 +622,8 @@ function MonthVisitChip({
   dim: boolean;
   onEdit: EditVisit;
 }) {
+  // На мобильном drag отключен (перенос — в карточке визита); чип скрыт сеткой
+  const isMobile = useIsMobile();
   const { attributes, listeners, setNodeRef, isDragging } = useDraggable({
     id: visit.id,
     data: { visit },
@@ -609,9 +636,8 @@ function MonthVisitChip({
         e.stopPropagation();
         onEdit(visit);
       }}
-      {...attributes}
-      {...listeners}
-      style={{ touchAction: "none" }}
+      {...(isMobile ? {} : { ...attributes, ...listeners })}
+      style={isMobile ? undefined : { touchAction: "none" }}
       title={`${fmtTime(visit.date)} · ${visit.doctor?.fullName ?? "—"} · ${visit.purpose}`}
       aria-label={`Визит в ${fmtTime(visit.date)} — ${visit.doctor?.fullName ?? "врач"}. Открыть карточку`}
       className={cn(
@@ -626,7 +652,8 @@ function MonthVisitChip({
   );
 }
 
-/** День в месячной сетке: клик по телу дня → расписание дня, «+» → создание, сброс чипа → перенос */
+/** День в месячной сетке: клик по телу дня → расписание дня, «+» → создание, сброс чипа → перенос.
+ *  На мобильном чипы заменяются точками-индикаторами по статусам. */
 function MonthDayCell({
   day,
   visits,
@@ -649,7 +676,7 @@ function MonthDayCell({
       onClick={() => onOpenDay(day)}
       title="Открыть расписание дня"
       className={cn(
-        "group/cell flex min-h-[112px] cursor-pointer flex-col gap-1 rounded-lg border p-1.5 transition-colors",
+        "group/cell tap-clean flex min-h-[60px] cursor-pointer flex-col gap-1 rounded-lg border p-1.5 transition-colors md:min-h-[112px]",
         dim ? "border-border/60 bg-soft" : "border-border bg-white hover:border-sky/50",
         isToday(day) && "border-azure/60 bg-sky-light/50 ring-1 ring-azure",
         isOver && "border-azure bg-sky-light/70 ring-2 ring-azure"
@@ -658,7 +685,7 @@ function MonthDayCell({
       <div className="flex items-center justify-between">
         <span
           className={cn(
-            "inline-flex h-5 w-5 items-center justify-center rounded-full font-display text-[11px] font-bold",
+            "inline-flex h-6 w-6 items-center justify-center rounded-full font-display text-[12px] font-bold md:h-5 md:w-5 md:text-[11px]",
             isToday(day)
               ? "bg-azure text-white"
               : dim
@@ -674,13 +701,25 @@ function MonthDayCell({
             e.stopPropagation();
             onCreate(day);
           }}
-          className="text-sky opacity-0 transition-opacity hover:text-azure group-hover/cell:opacity-100"
+          className="tap-clean -mr-1 -mt-1 flex h-8 w-8 items-center justify-center text-sky transition-colors hover:text-azure md:opacity-0 md:group-hover/cell:opacity-100"
           aria-label={`Запланировать визит на ${iso(day)}`}
         >
-          <Plus className="h-3.5 w-3.5" strokeWidth={2} />
+          <Plus className="h-4 w-4" strokeWidth={2} />
         </button>
       </div>
-      <div className="flex flex-col gap-1">
+      {/* Мобильный вариант: точки по статусам (компактно) */}
+      {visits.length > 0 && (
+        <div className="flex min-h-5 flex-wrap items-center gap-1 md:hidden" aria-hidden>
+          {visits.slice(0, 4).map((v) => (
+            <span key={v.id} className={cn("h-1.5 w-1.5 rounded-full", DOT_BG[v.status])} />
+          ))}
+          {visits.length > 4 && (
+            <span className="text-[9px] font-semibold text-sky">+{visits.length - 4}</span>
+          )}
+        </div>
+      )}
+      {/* Десктопный вариант: чипы визитов */}
+      <div className="hidden flex-col gap-1 md:flex">
         {visits.slice(0, 3).map((v) => (
           <MonthVisitChip key={v.id} visit={v} dim={dim} onEdit={onEdit} />
         ))}
@@ -694,8 +733,9 @@ function MonthDayCell({
   );
 }
 
-/** Карточка визита в недельной сетке — перетаскиваемая, клик открывает карточку */
+/** Карточка визита в недельной сетке — перетаскиваемая (десктоп), клик открывает карточку */
 function WeekVisitCard({ visit, onEdit }: { visit: VisitItem; onEdit: EditVisit }) {
+  const isMobile = useIsMobile();
   const { attributes, listeners, setNodeRef, isDragging } = useDraggable({
     id: visit.id,
     data: { visit },
@@ -705,25 +745,24 @@ function WeekVisitCard({ visit, onEdit }: { visit: VisitItem; onEdit: EditVisit 
       ref={setNodeRef}
       type="button"
       onClick={() => onEdit(visit)}
-      {...attributes}
-      {...listeners}
-      style={{ touchAction: "none" }}
+      {...(isMobile ? {} : { ...attributes, ...listeners })}
+      style={isMobile ? undefined : { touchAction: "none" }}
       aria-label={`Визит в ${fmtTime(visit.date)} — ${visit.doctor?.fullName ?? "врач"}. Открыть карточку`}
       className={cn(
-        "w-full cursor-grab rounded-lg border border-border bg-white p-2.5 text-left shadow-[0_1px_6px_rgba(25,70,136,0.06)] transition-colors hover:border-azure/60 active:cursor-grabbing",
+        "tap-clean w-full rounded-lg border border-border bg-white p-3 text-left shadow-[0_1px_6px_rgba(25,70,136,0.06)] transition-colors hover:border-azure/60 active:bg-sky-light/40 md:p-2.5",
         isDragging && "opacity-30"
       )}
     >
-      <p className="truncate text-xs font-semibold text-brand">
+      <p className="truncate text-[13px] font-semibold text-brand md:text-xs">
         <span className="font-display text-[11px] font-bold text-azure">
           {fmtTime(visit.date)}
         </span>{" "}
         {visit.doctor?.fullName ?? "—"}
       </p>
-      <p className="mt-0.5 line-clamp-2 text-[11px] text-muted-foreground">
+      <p className="mt-0.5 line-clamp-2 text-xs text-muted-foreground md:text-[11px]">
         {visit.purpose}
       </p>
-      {visit.lpu && <p className="mt-1 truncate text-[10px] text-sky">{visit.lpu.name}</p>}
+      {visit.lpu && <p className="mt-1 truncate text-[11px] text-sky">{visit.lpu.name}</p>}
       <div className="mt-1.5">
         <StatusChip status={visit.status} />
       </div>
@@ -750,7 +789,7 @@ function WeekColumn({
     <div
       ref={setNodeRef}
       className={cn(
-        "flex min-h-[400px] flex-col rounded-lg border",
+        "flex flex-col rounded-lg border md:min-h-[400px]",
         isToday(day) ? "border-azure/60 bg-sky-light/40" : "border-border bg-white",
         isOver && "border-azure bg-sky-light/70 ring-2 ring-azure"
       )}
@@ -760,7 +799,7 @@ function WeekColumn({
         onClick={() => onOpenDay(day)}
         title="Открыть расписание дня"
         aria-label={`Открыть расписание на ${format(day, "d MMMM", { locale: ru })}`}
-        className="w-full cursor-pointer rounded-t-lg border-b border-border/70 px-2 py-2 text-center transition-colors hover:bg-sky-light/60"
+        className="tap-clean w-full cursor-pointer rounded-t-lg border-b border-border/70 px-2 py-2.5 text-center transition-colors hover:bg-sky-light/60 md:py-2"
       >
         <div className="text-[10px] uppercase tracking-wide text-muted-foreground">
           {cap(format(day, "EEEEEE", { locale: ru }))}
@@ -778,20 +817,26 @@ function WeekColumn({
         {visits.map((v) => (
           <WeekVisitCard key={v.id} visit={v} onEdit={onEdit} />
         ))}
+        {visits.length === 0 && (
+          <p className="py-2 text-center text-[11px] text-muted-foreground/70 md:hidden">
+            Визитов нет
+          </p>
+        )}
         <button
           type="button"
           onClick={() => onCreate(day)}
-          className="mt-auto flex items-center justify-center gap-1 rounded-md border border-dashed border-sky/40 py-1.5 text-[10px] font-medium text-sky transition-colors hover:border-azure hover:text-azure"
+          className="mt-auto flex min-h-9 items-center justify-center gap-1 rounded-md border border-dashed border-sky/40 py-1.5 text-xs font-medium text-sky transition-colors hover:border-azure hover:text-azure md:min-h-0 md:text-[10px]"
         >
-          <Plus className="h-3 w-3" strokeWidth={2} /> Добавить
+          <Plus className="h-3.5 w-3.5 md:h-3 md:w-3" strokeWidth={2} /> Добавить
         </button>
       </div>
     </div>
   );
 }
 
-/** Карточка визита в виде «День» — перетаскиваемая по времени, клик открывает карточку */
+/** Карточка визита в виде «День» — перетаскиваемая (десктоп), клик открывает карточку */
 function DayVisitCard({ visit, onEdit }: { visit: VisitItem; onEdit: EditVisit }) {
+  const isMobile = useIsMobile();
   const { attributes, listeners, setNodeRef, isDragging } = useDraggable({
     id: visit.id,
     data: { visit },
@@ -804,27 +849,26 @@ function DayVisitCard({ visit, onEdit }: { visit: VisitItem; onEdit: EditVisit }
         e.stopPropagation();
         onEdit(visit);
       }}
-      {...attributes}
-      {...listeners}
-      style={{ touchAction: "none" }}
+      {...(isMobile ? {} : { ...attributes, ...listeners })}
+      style={isMobile ? undefined : { touchAction: "none" }}
       aria-label={`Визит в ${fmtTime(visit.date)} — ${visit.doctor?.fullName ?? "врач"}. Открыть карточку`}
       className={cn(
-        "flex w-full cursor-grab items-center justify-between gap-3 rounded-lg border border-border bg-white p-2.5 text-left shadow-[0_1px_6px_rgba(25,70,136,0.06)] transition-colors hover:border-azure/60 active:cursor-grabbing",
+        "tap-clean flex w-full items-center justify-between gap-3 rounded-lg border border-border bg-white p-3 text-left shadow-[0_1px_6px_rgba(25,70,136,0.06)] transition-colors hover:border-azure/60 active:bg-sky-light/40 md:p-2.5",
         isDragging && "opacity-30"
       )}
     >
       <div className="min-w-0">
-        <p className="truncate text-xs font-semibold text-brand">
+        <p className="truncate text-[13px] font-semibold text-brand md:text-xs">
           <span className="font-display text-[11px] font-bold text-azure">
             {fmtTime(visit.date)}
           </span>{" "}
           {visit.doctor?.fullName ?? "—"}
         </p>
-        <p className="mt-0.5 truncate text-[11px] text-muted-foreground">
+        <p className="mt-0.5 truncate text-xs text-muted-foreground md:text-[11px]">
           {visit.purpose}
         </p>
         {visit.lpu && (
-          <p className="mt-0.5 truncate text-[10px] text-sky">{visit.lpu.name}</p>
+          <p className="mt-0.5 truncate text-[11px] text-sky">{visit.lpu.name}</p>
         )}
       </div>
       <div className="shrink-0">
@@ -856,7 +900,7 @@ function DayHourRow({
       {/* Метка часа */}
       <div
         className={cn(
-          "w-16 shrink-0 border-r border-border/60 px-2 py-1.5 text-right font-display text-[11px] font-semibold",
+          "w-12 shrink-0 border-r border-border/60 px-1 py-1.5 text-right font-display text-[11px] font-semibold md:w-16 md:px-2",
           isCurrent ? "bg-sky-light text-azure" : "bg-soft/60 text-sky"
         )}
       >
@@ -871,7 +915,7 @@ function DayHourRow({
         }}
         onClick={onCreateSlot}
         className={cn(
-          "group/slot relative min-h-[56px] flex-1 cursor-pointer p-1.5 transition-colors hover:bg-sky-light/40",
+          "group/slot relative min-h-[64px] flex-1 cursor-pointer p-1.5 transition-colors hover:bg-sky-light/40 md:min-h-[56px]",
           isCurrent && "bg-sky-light/50",
           isOver && "bg-sky-light ring-1 ring-inset ring-azure"
         )}
@@ -887,12 +931,12 @@ function DayHourRow({
           </div>
         )}
         <Plus
-          className="pointer-events-none absolute right-2 top-2 h-3.5 w-3.5 text-sky opacity-0 transition-opacity group-hover/slot:opacity-100"
+          className="pointer-events-none absolute right-2 top-2 h-4 w-4 text-sky opacity-60 transition-opacity md:h-3.5 md:w-3.5 md:opacity-0 md:group-hover/slot:opacity-100"
           strokeWidth={2}
           aria-hidden
         />
         {visits.length === 0 ? (
-          <span className="select-none text-[11px] text-transparent transition-colors group-hover/slot:text-muted-foreground/60">
+          <span className="select-none text-[11px] text-muted-foreground/50 transition-colors md:text-transparent md:group-hover/slot:text-muted-foreground/60">
             Запланировать на {pad2(hour)}:00
           </span>
         ) : (
@@ -929,71 +973,107 @@ function SectionFilters({
   setDoctorFilter: (v: string) => void;
   onCreate: () => void;
 }) {
+  // Мобильная панель фильтров — сворачиваемая (на десктопе всегда открыта)
+  const [open, setOpen] = useState(false);
+  const activeCount = [mpFilter, statusFilter, doctorFilter].filter((v) => v !== "ALL").length;
+
+  const selects = (
+    <>
+      <div className="space-y-1.5">
+        <Label className="text-xs text-muted-foreground">Медицинский представитель</Label>
+        <Select value={mpFilter} onValueChange={setMpFilter}>
+          <SelectTrigger className="h-11 w-full bg-white text-base md:h-9 md:text-sm">
+            <SelectValue />
+          </SelectTrigger>
+          <SelectContent>
+            <SelectItem value="ALL">Все МП</SelectItem>
+            {mps.map((u) => (
+              <SelectItem key={u.id} value={u.id}>
+                {u.name}
+              </SelectItem>
+            ))}
+          </SelectContent>
+        </Select>
+      </div>
+      <div className="space-y-1.5">
+        <Label className="text-xs text-muted-foreground">Статус визита</Label>
+        <Select value={statusFilter} onValueChange={setStatusFilter}>
+          <SelectTrigger className="h-11 w-full bg-white text-base md:h-9 md:text-sm">
+            <SelectValue />
+          </SelectTrigger>
+          <SelectContent>
+            <SelectItem value="ALL">Все статусы</SelectItem>
+            {(
+              Object.entries(VISIT_STATUS_LABELS) as Array<[VisitStatus, string]>
+            ).map(([value, label]) => (
+              <SelectItem key={value} value={value}>
+                {label}
+              </SelectItem>
+            ))}
+          </SelectContent>
+        </Select>
+      </div>
+      <div className="space-y-1.5">
+        <Label className="text-xs text-muted-foreground">Врач (НВ)</Label>
+        <Select value={doctorFilter} onValueChange={setDoctorFilter}>
+          <SelectTrigger className="h-11 w-full bg-white text-base md:h-9 md:text-sm">
+            <SelectValue />
+          </SelectTrigger>
+          <SelectContent className="max-h-60">
+            <SelectItem value="ALL">Все врачи</SelectItem>
+            {doctorOptions.map((d) => (
+              <SelectItem key={d.id} value={d.id}>
+                {d.fullName}
+              </SelectItem>
+            ))}
+          </SelectContent>
+        </Select>
+      </div>
+    </>
+  );
+
   return (
-    <section className="rounded-xl border border-border bg-white p-6 shadow-[0_2px_12px_rgba(25,70,136,0.05)]">
-      <div className="mb-4 flex flex-wrap items-center justify-between gap-3">
-        <div>
+    <section className="rounded-xl border border-border bg-white p-4 shadow-[0_2px_12px_rgba(25,70,136,0.05)] md:p-6">
+      <div className="flex flex-wrap items-center justify-between gap-3 md:mb-4">
+        {/* Мобильная строка: кнопка «Фильтры» с бейджем активных */}
+        <div className="w-full md:hidden">
+          <Button
+            type="button"
+            variant="outline"
+            className="h-10 w-full gap-2 border-sky/40 text-brand"
+            onClick={() => setOpen((o) => !o)}
+            aria-expanded={open}
+          >
+            <SlidersHorizontal className="h-4 w-4" strokeWidth={2} />
+            Фильтры
+            {activeCount > 0 && (
+              <Badge className="h-5 min-w-5 justify-center rounded-full bg-azure px-1.5 text-[10px] text-white hover:bg-azure">
+                {activeCount}
+              </Badge>
+            )}
+            <ChevronDown
+              className={cn("h-4 w-4 transition-transform", open && "rotate-180")}
+              aria-hidden
+            />
+          </Button>
+        </div>
+        {/* Десктопный заголовок панели */}
+        <div className="hidden md:block">
           <h3 className="font-display text-base font-bold text-brand">Фильтры</h3>
           <p className="mt-0.5 text-xs text-muted-foreground">
             Отбор визитов по сотруднику, врачу и статусу
           </p>
         </div>
-        <Button onClick={onCreate} className="gap-1.5">
+        <Button onClick={onCreate} className="hidden gap-1.5 md:inline-flex">
           <CalendarPlus className="h-4 w-4" strokeWidth={2} /> Запланировать визит
         </Button>
       </div>
-      <div className="grid grid-cols-1 gap-4 md:grid-cols-3">
-        <div className="space-y-1.5">
-          <Label className="text-xs text-muted-foreground">Медицинский представитель</Label>
-          <Select value={mpFilter} onValueChange={setMpFilter}>
-            <SelectTrigger className="bg-white">
-              <SelectValue />
-            </SelectTrigger>
-            <SelectContent>
-              <SelectItem value="ALL">Все МП</SelectItem>
-              {mps.map((u) => (
-                <SelectItem key={u.id} value={u.id}>
-                  {u.name}
-                </SelectItem>
-              ))}
-            </SelectContent>
-          </Select>
-        </div>
-        <div className="space-y-1.5">
-          <Label className="text-xs text-muted-foreground">Статус визита</Label>
-          <Select value={statusFilter} onValueChange={setStatusFilter}>
-            <SelectTrigger className="bg-white">
-              <SelectValue />
-            </SelectTrigger>
-            <SelectContent>
-              <SelectItem value="ALL">Все статусы</SelectItem>
-              {(
-                Object.entries(VISIT_STATUS_LABELS) as Array<[VisitStatus, string]>
-              ).map(([value, label]) => (
-                <SelectItem key={value} value={value}>
-                  {label}
-                </SelectItem>
-              ))}
-            </SelectContent>
-          </Select>
-        </div>
-        <div className="space-y-1.5">
-          <Label className="text-xs text-muted-foreground">Врач (НВ)</Label>
-          <Select value={doctorFilter} onValueChange={setDoctorFilter}>
-            <SelectTrigger className="bg-white">
-              <SelectValue />
-            </SelectTrigger>
-            <SelectContent className="max-h-60">
-              <SelectItem value="ALL">Все врачи</SelectItem>
-              {doctorOptions.map((d) => (
-                <SelectItem key={d.id} value={d.id}>
-                  {d.fullName}
-                </SelectItem>
-              ))}
-            </SelectContent>
-          </Select>
-        </div>
-      </div>
+      {/* Мобильная сворачиваемая панель */}
+      {open && (
+        <div className="mt-3 grid grid-cols-1 gap-3 md:hidden">{selects}</div>
+      )}
+      {/* Десктопная сетка фильтров */}
+      <div className="hidden grid-cols-1 gap-4 md:grid md:grid-cols-3">{selects}</div>
     </section>
   );
 }

@@ -5,6 +5,8 @@
 // Используется из «Календаря» (месяц/неделя/день) и раздела «Визиты».
 // Дата уходит на сервер полным ISO: new Date(`${date}T${time}`).toISOString()
 // Сервер (parseDate) принимает полный ISO и хранит время визита.
+// Mobile-first: на телефоне — bottom-sheet с крупными полями и
+// закрепленной панелью кнопок; на десктопе — диалог.
 // ============================================================
 
 import { useMemo, useState } from "react";
@@ -29,6 +31,13 @@ import {
   DialogTitle,
 } from "@/components/ui/dialog";
 import {
+  Sheet,
+  SheetContent,
+  SheetDescription,
+  SheetHeader,
+  SheetTitle,
+} from "@/components/ui/sheet";
+import {
   Select,
   SelectContent,
   SelectItem,
@@ -36,6 +45,8 @@ import {
   SelectValue,
 } from "@/components/ui/select";
 import { CalendarPlus } from "lucide-react";
+import { useIsMobile } from "@/hooks/use-mobile";
+import { cn } from "@/lib/utils";
 
 type VisitStatus = VisitItem["status"];
 
@@ -104,6 +115,81 @@ export function VisitDialog({
   defaultTime,
   onSaved,
 }: VisitDialogProps) {
+  const isMobile = useIsMobile();
+  const editing = visit ?? null;
+
+  if (isMobile) {
+    return (
+      <Sheet open={open} onOpenChange={onOpenChange}>
+        <SheetContent
+          side="bottom"
+          className="flex h-[92dvh] flex-col gap-0 rounded-t-2xl bg-white p-0"
+        >
+          {/* Ручка перетаскивания */}
+          <div className="flex justify-center pt-2" aria-hidden>
+            <span className="h-1.5 w-10 rounded-full bg-sky/40" />
+          </div>
+          <SheetHeader className="p-4 pb-2 text-left">
+            <SheetTitle className="font-display text-lg text-brand">
+              {editing ? "Редактирование визита" : "Новый визит к НВ"}
+            </SheetTitle>
+            <SheetDescription className="text-xs">
+              {editing
+                ? "Обновите данные визита — изменения попадут в журнал аудита."
+                : "Обязательные поля — врач, дата и цель."}
+            </SheetDescription>
+          </SheetHeader>
+          <VisitFormBody
+            open={open}
+            onOpenChange={onOpenChange}
+            visit={visit}
+            defaultDate={defaultDate}
+            defaultTime={defaultTime}
+            onSaved={onSaved}
+            layout="sheet"
+          />
+        </SheetContent>
+      </Sheet>
+    );
+  }
+
+  return (
+    <Dialog open={open} onOpenChange={onOpenChange}>
+      <DialogContent className="max-h-[calc(100dvh-4rem)] overflow-y-auto sm:max-w-lg">
+        <DialogHeader>
+          <DialogTitle className="font-display text-brand">
+            {editing ? "Редактирование визита" : "Новый визит к НВ"}
+          </DialogTitle>
+          <DialogDescription>
+            {editing
+              ? "Обновите данные визита — изменения попадут в журнал аудита."
+              : "Заполните поля — врач, дата и цель обязательны."}
+          </DialogDescription>
+        </DialogHeader>
+        <VisitFormBody
+          open={open}
+          onOpenChange={onOpenChange}
+          visit={visit}
+          defaultDate={defaultDate}
+          defaultTime={defaultTime}
+          onSaved={onSaved}
+          layout="dialog"
+        />
+      </DialogContent>
+    </Dialog>
+  );
+}
+
+/** Тело формы визита (поля + кнопки) — общее для sheet и dialog */
+function VisitFormBody({
+  open,
+  onOpenChange,
+  visit = null,
+  defaultDate,
+  defaultTime,
+  onSaved,
+  layout,
+}: VisitDialogProps & { layout: "sheet" | "dialog" }) {
   const qc = useQueryClient();
   const { data: session } = useSession();
   const isMP = (session?.user as { role?: Role } | undefined)?.role === "MP";
@@ -191,137 +277,131 @@ export function VisitDialog({
     onError: (e: Error) => toast.error(e.message),
   });
 
-  return (
-    <Dialog open={open} onOpenChange={onOpenChange}>
-      <DialogContent className="max-h-[calc(100dvh-4rem)] overflow-y-auto sm:max-w-lg">
-        <DialogHeader>
-          <DialogTitle className="font-display text-brand">
-            {editing ? "Редактирование визита" : "Новый визит к НВ"}
-          </DialogTitle>
-          <DialogDescription>
-            {editing
-              ? "Обновите данные визита — изменения попадут в журнал аудита."
-              : "Заполните поля — врач, дата и цель обязательны."}
-          </DialogDescription>
-        </DialogHeader>
-        <div className="grid grid-cols-1 gap-4 py-2 sm:grid-cols-2">
-          <div className="space-y-1.5 sm:col-span-2">
-            <Label>
-              Врач (НВ) <span className="text-terra-dark">*</span>
-            </Label>
-            <Select
-              value={form.doctorId}
-              onValueChange={(v) =>
-                setForm((f) => ({ ...f, doctorId: v, lpuId: "none" }))
-              }
-            >
-              <SelectTrigger className="bg-white">
-                <SelectValue placeholder="Выберите врача" />
-              </SelectTrigger>
-              <SelectContent className="max-h-60">
-                {doctorOptions.map((d) => (
-                  <SelectItem key={d.id} value={d.id}>
-                    {d.fullName}
-                  </SelectItem>
-                ))}
-              </SelectContent>
-            </Select>
-          </div>
-          <div className="space-y-1.5 sm:col-span-2">
-            <Label>ЛПУ (из привязок врача)</Label>
-            <Select
-              value={form.lpuId}
-              onValueChange={(v) => setForm((f) => ({ ...f, lpuId: v }))}
-              disabled={!form.doctorId}
-            >
-              <SelectTrigger className="bg-white">
-                <SelectValue placeholder="Не указывать" />
-              </SelectTrigger>
-              <SelectContent>
-                <SelectItem value="none">Не указывать</SelectItem>
-                {lpuOptions.map((l) => (
-                  <SelectItem key={l.id} value={l.id}>
-                    {l.name}
-                  </SelectItem>
-                ))}
-              </SelectContent>
-            </Select>
-          </div>
-          {/* Дата / Время / Статус */}
-          <div className="grid grid-cols-1 gap-4 sm:col-span-2 sm:grid-cols-3">
-            <div className="space-y-1.5">
-              <Label>
-                Дата <span className="text-terra-dark">*</span>
-              </Label>
-              <Input
-                type="date"
-                value={form.date}
-                onChange={(e) => setForm((f) => ({ ...f, date: e.target.value }))}
-                className="bg-white"
-              />
-            </div>
-            <div className="space-y-1.5">
-              <Label>
-                Время{" "}
-                <span className="text-[10px] font-normal text-muted-foreground">
-                  (ЧЧ:ММ)
-                </span>
-              </Label>
-              <Input
-                type="time"
-                value={form.time}
-                onChange={(e) => setForm((f) => ({ ...f, time: e.target.value }))}
-                className="bg-white"
-                title="Время визита, например 09:30"
-              />
-            </div>
-            <div className="space-y-1.5">
-              <Label>Статус</Label>
-              <Select
-                value={form.status}
-                onValueChange={(v) =>
-                  setForm((f) => ({ ...f, status: v as VisitStatus }))
-                }
-              >
-                <SelectTrigger className="bg-white">
-                  <SelectValue />
-                </SelectTrigger>
-                <SelectContent>
-                  {(
-                    Object.entries(VISIT_STATUS_LABELS) as Array<[VisitStatus, string]>
-                  ).map(([value, label]) => (
-                    <SelectItem key={value} value={value}>
-                      {label}
-                    </SelectItem>
-                  ))}
-                </SelectContent>
-              </Select>
-            </div>
-          </div>
-          <div className="space-y-1.5 sm:col-span-2">
-            <Label>
-              Цель визита <span className="text-terra-dark">*</span>
-            </Label>
-            <Input
-              value={form.purpose}
-              onChange={(e) => setForm((f) => ({ ...f, purpose: e.target.value }))}
-              placeholder="Например: презентация новых протоколов МРТ"
-              className="bg-white"
-            />
-          </div>
-          <div className="space-y-1.5 sm:col-span-2">
-            <Label>Комментарий</Label>
-            <Textarea
-              rows={3}
-              value={form.comment}
-              onChange={(e) => setForm((f) => ({ ...f, comment: e.target.value }))}
-              placeholder="Дополнительная информация о встрече…"
-              className="bg-white"
-            />
-          </div>
+  const fields = (
+    <>
+      <div className="space-y-1.5">
+        <Label className="text-[13px]">
+          Врач (НВ) <span className="text-terra-dark">*</span>
+        </Label>
+        <Select
+          value={form.doctorId}
+          onValueChange={(v) =>
+            setForm((f) => ({ ...f, doctorId: v, lpuId: "none" }))
+          }
+        >
+          <SelectTrigger className="h-11 bg-white text-base md:h-10 md:text-sm">
+            <SelectValue placeholder="Выберите врача" />
+          </SelectTrigger>
+          <SelectContent className="max-h-60">
+            {doctorOptions.map((d) => (
+              <SelectItem key={d.id} value={d.id}>
+                {d.fullName}
+              </SelectItem>
+            ))}
+          </SelectContent>
+        </Select>
+      </div>
+      <div className="space-y-1.5">
+        <Label className="text-[13px]">ЛПУ (из привязок врача)</Label>
+        <Select
+          value={form.lpuId}
+          onValueChange={(v) => setForm((f) => ({ ...f, lpuId: v }))}
+          disabled={!form.doctorId}
+        >
+          <SelectTrigger className="h-11 bg-white text-base md:h-10 md:text-sm">
+            <SelectValue placeholder="Не указывать" />
+          </SelectTrigger>
+          <SelectContent>
+            <SelectItem value="none">Не указывать</SelectItem>
+            {lpuOptions.map((l) => (
+              <SelectItem key={l.id} value={l.id}>
+                {l.name}
+              </SelectItem>
+            ))}
+          </SelectContent>
+        </Select>
+      </div>
+      {/* Дата / Время / Статус */}
+      <div className="grid grid-cols-2 gap-3 sm:grid-cols-3">
+        <div className="space-y-1.5 col-span-2 sm:col-span-1">
+          <Label className="text-[13px]">
+            Дата <span className="text-terra-dark">*</span>
+          </Label>
+          <Input
+            type="date"
+            value={form.date}
+            onChange={(e) => setForm((f) => ({ ...f, date: e.target.value }))}
+            className="h-11 bg-white md:h-10"
+          />
         </div>
-        <DialogFooter className="sm:justify-between">
-          {editing && isMP ? (
+        <div className="space-y-1.5">
+          <Label className="text-[13px]">
+            Время{" "}
+            <span className="text-[10px] font-normal text-muted-foreground">
+              (ЧЧ:ММ)
+            </span>
+          </Label>
+          <Input
+            type="time"
+            value={form.time}
+            onChange={(e) => setForm((f) => ({ ...f, time: e.target.value }))}
+            className="h-11 bg-white md:h-10"
+            title="Время визита, например 09:30"
+          />
+        </div>
+        <div className="space-y-1.5">
+          <Label className="text-[13px]">Статус</Label>
+          <Select
+            value={form.status}
+            onValueChange={(v) =>
+              setForm((f) => ({ ...f, status: v as VisitStatus }))
+            }
+          >
+            <SelectTrigger className="h-11 w-full bg-white text-base md:h-10 md:text-sm">
+              <SelectValue />
+            </SelectTrigger>
+            <SelectContent>
+              {(
+                Object.entries(VISIT_STATUS_LABELS) as Array<[VisitStatus, string]>
+              ).map(([value, label]) => (
+                <SelectItem key={value} value={value}>
+                  {label}
+                </SelectItem>
+              ))}
+            </SelectContent>
+          </Select>
+        </div>
+      </div>
+      <div className="space-y-1.5">
+        <Label className="text-[13px]">
+          Цель визита <span className="text-terra-dark">*</span>
+        </Label>
+        <Input
+          value={form.purpose}
+          onChange={(e) => setForm((f) => ({ ...f, purpose: e.target.value }))}
+          placeholder="Например: презентация новых протоколов МРТ"
+          className="h-11 bg-white text-base md:h-10 md:text-sm"
+        />
+      </div>
+      <div className="space-y-1.5">
+        <Label className="text-[13px]">Комментарий</Label>
+        <Textarea
+          rows={layout === "sheet" ? 3 : 3}
+          value={form.comment}
+          onChange={(e) => setForm((f) => ({ ...f, comment: e.target.value }))}
+          placeholder="Дополнительная информация о встрече…"
+          className="text-base md:text-sm"
+        />
+      </div>
+    </>
+  );
+
+  if (layout === "sheet") {
+    return (
+      <>
+        <div className="flex-1 space-y-4 overflow-y-auto px-4 pb-4">{fields}</div>
+        <div className="flex shrink-0 items-center gap-2 border-t border-border bg-white p-4 pb-[calc(1rem+env(safe-area-inset-bottom))]">
+          {editing && isMP && (
             <DeleteButton
               title={`Удалить визит к «${editing.doctor?.fullName ?? "врачу"}»?`}
               description="Визит будет удален безвозвратно, действие попадет в журнал аудита."
@@ -329,26 +409,56 @@ export function VisitDialog({
                 await remove.mutateAsync(editing.id);
               }}
             />
-          ) : (
-            <span />
           )}
-          <div className="flex gap-2">
-            <Button variant="outline" onClick={close}>
-              Отмена
-            </Button>
-            <Button
-              onClick={() => save.mutate()}
-              disabled={
-                !form.doctorId || !form.date || !form.purpose.trim() || save.isPending
-              }
-              className="gap-1.5"
-            >
-              <CalendarPlus className="h-4 w-4" strokeWidth={2} />
-              {editing ? "Сохранить" : "Создать"}
-            </Button>
-          </div>
-        </DialogFooter>
-      </DialogContent>
-    </Dialog>
+          <Button variant="outline" onClick={close} className="h-12 flex-1 text-base">
+            Отмена
+          </Button>
+          <Button
+            onClick={() => save.mutate()}
+            disabled={
+              !form.doctorId || !form.date || !form.purpose.trim() || save.isPending
+            }
+            className="h-12 flex-[2] gap-1.5 bg-azure text-base hover:bg-azure-dark"
+          >
+            <CalendarPlus className="h-4 w-4" strokeWidth={2} />
+            {editing ? "Сохранить" : "Создать"}
+          </Button>
+        </div>
+      </>
+    );
+  }
+
+  return (
+    <>
+      <div className="grid grid-cols-1 gap-4 py-2 sm:grid-cols-2">{fields}</div>
+      <DialogFooter className="sm:justify-between">
+        {editing && isMP ? (
+          <DeleteButton
+            title={`Удалить визит к «${editing.doctor?.fullName ?? "врачу"}»?`}
+            description="Визит будет удален безвозвратно, действие попадет в журнал аудита."
+            onConfirm={async () => {
+              await remove.mutateAsync(editing.id);
+            }}
+          />
+        ) : (
+          <span />
+        )}
+        <div className={cn("flex gap-2")}>
+          <Button variant="outline" onClick={close}>
+            Отмена
+          </Button>
+          <Button
+            onClick={() => save.mutate()}
+            disabled={
+              !form.doctorId || !form.date || !form.purpose.trim() || save.isPending
+            }
+            className="gap-1.5"
+          >
+            <CalendarPlus className="h-4 w-4" strokeWidth={2} />
+            {editing ? "Сохранить" : "Создать"}
+          </Button>
+        </div>
+      </DialogFooter>
+    </>
   );
 }

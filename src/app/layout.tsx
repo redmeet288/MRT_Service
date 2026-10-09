@@ -30,6 +30,8 @@ export const metadata: Metadata = {
 export const viewport: Viewport = {
   width: "device-width",
   initialScale: 1,
+  viewportFit: "cover", // безопасные зоны iPhone (нижняя навигация не залезает на «жестовую» полосу)
+  themeColor: "#0b2450",
 };
 
 export default function RootLayout({

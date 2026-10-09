@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect } from "react";
+import { useEffect, useState } from "react";
 import { useSession, signOut } from "next-auth/react";
 import {
   eachDayOfInterval,
@@ -29,10 +29,19 @@ import {
   FileCode2,
   LogOut,
   Building2,
+  MoreHorizontal,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { Badge } from "@/components/ui/badge";
 import { Avatar, AvatarFallback } from "@/components/ui/avatar";
+import {
+  Sheet,
+  SheetContent,
+  SheetDescription,
+  SheetHeader,
+  SheetTitle,
+} from "@/components/ui/sheet";
+import { Button } from "@/components/ui/button";
 import {
   DashboardView,
   DoctorsView,
@@ -85,9 +94,13 @@ const VIEW_TITLES: Record<ViewKey, { title: string; subtitle: string }> = {
   docs: { title: "Документация API", subtitle: "Структура БД, словарь данных, REST-эндпоинты" },
 };
 
+/** Порядок главных вкладок нижней навигации на мобильном (остальные — в меню «Ещё») */
+const MOBILE_MAIN_ORDER: ViewKey[] = ["dashboard", "requests", "calendar", "doctors"];
+
 export function AppShell() {
   const { data: session } = useSession();
   const { activeView, setActiveView, syncFromHistory } = useUiStore();
+  const [moreOpen, setMoreOpen] = useState(false);
   // Приведение типа сессии (аугментация next-auth отсутствует) — как в visit-dialog.tsx
   const role = (session?.user as { role?: Role } | undefined)?.role ?? "OPERATOR";
   const name = session?.user?.name ?? "";
@@ -102,6 +115,15 @@ export function AppShell() {
   const allowed: ViewKey[] = isMP
     ? ["dashboard", "doctors", "requests", "visits", "calendar", "reports", "dictionaries", "users", "audit", "docs"]
     : OPERATOR_VIEWS;
+
+  // —— Мобильная навигация: главные вкладки (порядок MOBILE_MAIN_ORDER) + «Ещё» ——
+  const flatNav = NAV.flatMap((g) => g.items);
+  const mainItems = MOBILE_MAIN_ORDER.filter((k) => allowed.includes(k)).map(
+    (k) => flatNav.find((i) => i.key === k)!
+  );
+  const secondaryItems = flatNav.filter(
+    (i) => (!i.mpOnly || isMP) && allowed.includes(i.key) && !MOBILE_MAIN_ORDER.includes(i.key)
+  );
 
   // —— История браузера: кнопка «Назад» переключает разделы внутри приложения ——
   useEffect(() => {
@@ -137,17 +159,15 @@ export function AppShell() {
   }, [activeView, isMP]);
 
   const meta = VIEW_TITLES[activeView] ?? VIEW_TITLES.dashboard;
+  const isSecondaryActive = secondaryItems.some((i) => i.key === activeView);
 
   return (
     <div className="min-h-screen flex bg-soft">
-      {/* —— Сайдбар —— */}
-      <aside className="w-[68px] md:w-64 shrink-0 bg-sidebar text-sidebar-foreground flex flex-col sticky top-0 h-screen transition-[width] duration-200">
-        <div className="px-5 pt-6 pb-5 flex justify-center md:justify-start">
-          <span className="hidden md:block">
+      {/* —— Сайдбар (только десктоп; на мобильном — нижний таб-бар) —— */}
+      <aside className="hidden md:flex w-64 shrink-0 bg-sidebar text-sidebar-foreground flex-col sticky top-0 h-screen">
+        <div className="px-5 pt-6 pb-5 flex justify-start">
+          <span>
             <LogoFull height={34} variant="light" />
-          </span>
-          <span className="md:hidden">
-            <LogoMark size={34} variant="light" />
           </span>
         </div>
         <nav className="flex-1 overflow-y-auto px-3 pb-4" aria-label="Основная навигация">
@@ -156,7 +176,7 @@ export function AppShell() {
             if (!items.length) return null;
             return (
               <div key={group.section} className="mb-5">
-                <div className="hidden md:block px-3 mb-2 text-[11px] font-semibold uppercase tracking-[0.12em] text-sky/80 whitespace-nowrap">
+                <div className="px-3 mb-2 text-[11px] font-semibold uppercase tracking-[0.12em] text-sky/80 whitespace-nowrap">
                   {group.section}
                 </div>
                 <ul className="space-y-1">
@@ -171,7 +191,7 @@ export function AppShell() {
                           aria-label={item.label}
                           aria-current={active ? "page" : undefined}
                           className={cn(
-                            "w-full flex items-center md:gap-3 gap-0 justify-center md:justify-start rounded-lg md:px-3 px-0 py-2.5 text-sm font-medium transition-colors relative",
+                            "w-full flex items-center gap-3 justify-start rounded-lg px-3 py-2.5 text-sm font-medium transition-colors relative",
                             active
                               ? "bg-sidebar-accent text-white"
                               : "text-sidebar-foreground hover:bg-sidebar-accent hover:text-white"
@@ -181,7 +201,7 @@ export function AppShell() {
                             <span className="absolute left-0 top-1/2 -translate-y-1/2 h-6 w-1 rounded-r-full bg-azure" />
                           )}
                           <Icon className={cn("h-[18px] w-[18px] shrink-0", active ? "text-azure" : "text-sky")} strokeWidth={2} />
-                          <span className="hidden md:inline">{item.label}</span>
+                          <span>{item.label}</span>
                         </button>
                       </li>
                     );
@@ -201,7 +221,7 @@ export function AppShell() {
               {initials || "—"}
             </AvatarFallback>
           </Avatar>
-          <div className="hidden md:block flex-1 min-w-0">
+          <div className="flex-1 min-w-0">
             <div className="text-sm font-medium text-white truncate">{name}</div>
             <div className="text-[11px] text-sky truncate">{ROLE_LABELS[role]}</div>
           </div>
@@ -218,8 +238,28 @@ export function AppShell() {
       </aside>
 
       {/* —— Контентная колонка —— */}
-      <div className="flex-1 min-w-0 flex flex-col min-h-screen">
-        <header className="sticky top-0 z-20 bg-soft/85 backdrop-blur border-b border-border">
+      <div className="flex-1 min-w-0 flex flex-col min-h-screen pb-[calc(3.5rem+env(safe-area-inset-bottom))] md:pb-0">
+        {/* Топ-бар мобильного приложения (тёмный, фирменный) */}
+        <header className="md:hidden sticky top-0 z-30 bg-brand-deep text-white shadow-[0_2px_10px_rgba(11,36,80,0.25)]">
+          <div className="h-14 px-3 flex items-center gap-2">
+            <LogoMark size={28} variant="light" />
+            <h1 className="flex-1 min-w-0 text-center font-display text-base font-bold truncate">
+              {meta.title}
+            </h1>
+            <button
+              type="button"
+              onClick={() => signOut({ callbackUrl: "/" })}
+              title="Выйти"
+              aria-label="Выйти"
+              className="p-2.5 rounded-lg text-sky hover:text-white hover:bg-white/10 transition-colors"
+            >
+              <LogOut className="h-5 w-5" strokeWidth={2} />
+            </button>
+          </div>
+        </header>
+
+        {/* Десктопный заголовок раздела */}
+        <header className="hidden md:block sticky top-0 z-20 bg-soft/85 backdrop-blur border-b border-border">
           <div className="px-8 py-5 flex items-center justify-between gap-4">
             <div>
               <h1 className="font-display text-2xl font-bold text-brand">{meta.title}</h1>
@@ -245,7 +285,7 @@ export function AppShell() {
           </div>
         </header>
 
-        <main className="flex-1 px-8 py-6 view-enter" key={activeView}>
+        <main className="flex-1 px-3 py-4 md:px-8 md:py-6 view-enter" key={activeView}>
           {activeView === "dashboard" && <DashboardView />}
           {activeView === "doctors" && <DoctorsView />}
           {activeView === "requests" && <RequestsView />}
@@ -258,21 +298,134 @@ export function AppShell() {
           {activeView === "docs" && <DocsView />}
         </main>
 
-        <footer className="mt-auto px-8 py-4 border-t border-border bg-white/60">
-          <div className="flex items-center justify-between text-xs text-muted-foreground">
-            <span className="flex items-center gap-2">
-              <LogoMark size={18} />
-              <span className="font-medium text-brand">МРТ ТОЧНО</span> · CRM направляющих врачей · v1.1
+        <footer className="mt-auto px-3 md:px-8 py-3 md:py-4 border-t border-border bg-white/60">
+          <div className="flex items-center justify-between gap-2 text-[10px] md:text-xs text-muted-foreground">
+            <span className="flex items-center gap-1.5 min-w-0">
+              <LogoMark size={16} />
+              <span className="font-medium text-brand whitespace-nowrap">МРТ ТОЧНО</span>
+              <span className="truncate">· CRM направляющих врачей · v1.4</span>
             </span>
-            <span>Внутренний сервер · Доступ по ролям · UUID-идентификаторы сущностей</span>
+            <span className="hidden md:inline">Внутренний сервер · Доступ по ролям · UUID-идентификаторы сущностей</span>
           </div>
         </footer>
       </div>
+
+      {/* —— Нижняя навигация мобильного (большие тач-зоны, safe-area) —— */}
+      <nav
+        aria-label="Мобильная навигация"
+        className="md:hidden fixed inset-x-0 bottom-0 z-40 border-t border-border bg-white/95 backdrop-blur supports-[backdrop-filter]:bg-white/85 pb-[env(safe-area-inset-bottom)]"
+      >
+        <div
+          className="h-14 items-stretch"
+          style={{ display: "grid", gridTemplateColumns: `repeat(${mainItems.length + 1}, minmax(0,1fr))` }}
+        >
+          {mainItems.map((item) => {
+            const Icon = item.icon;
+            const active = activeView === item.key;
+            return (
+              <button
+                key={item.key}
+                type="button"
+                onClick={() => setActiveView(item.key)}
+                aria-label={item.label}
+                aria-current={active ? "page" : undefined}
+                className={cn(
+                  "relative flex flex-col items-center justify-center gap-0.5 px-1 transition-colors",
+                  active ? "text-azure" : "text-muted-foreground hover:text-brand"
+                )}
+              >
+                {active && <span className="absolute top-0 h-0.5 w-8 rounded-b-full bg-azure" aria-hidden />}
+                <Icon className="h-5 w-5" strokeWidth={active ? 2.4 : 2} />
+                <span className={cn("text-[10px] leading-none", active && "font-semibold")}>
+                  {item.label}
+                </span>
+              </button>
+            );
+          })}
+          <button
+            type="button"
+            onClick={() => setMoreOpen(true)}
+            aria-label="Ещё · открыть полное меню"
+            aria-expanded={moreOpen}
+            className={cn(
+              "relative flex flex-col items-center justify-center gap-0.5 px-1 transition-colors",
+              isSecondaryActive ? "text-azure" : "text-muted-foreground hover:text-brand"
+            )}
+          >
+            {isSecondaryActive && <span className="absolute top-0 h-0.5 w-8 rounded-b-full bg-azure" aria-hidden />}
+            <MoreHorizontal className="h-5 w-5" strokeWidth={isSecondaryActive ? 2.4 : 2} />
+            <span className={cn("text-[10px] leading-none", isSecondaryActive && "font-semibold")}>Ещё</span>
+          </button>
+        </div>
+      </nav>
+
+      {/* —— Меню «Ещё» (bottom-sheet) —— */}
+      <Sheet open={moreOpen} onOpenChange={setMoreOpen}>
+        <SheetContent
+          side="bottom"
+          className="rounded-t-2xl px-0 pb-0 max-h-[85dvh] bg-white"
+        >
+          <SheetHeader className="px-4 pb-0 text-left">
+            <SheetTitle className="font-display text-brand">Полное меню</SheetTitle>
+            <SheetDescription className="sr-only">Все разделы системы и выход</SheetDescription>
+          </SheetHeader>
+          <div className="overflow-y-auto px-2 py-2">
+            {secondaryItems.length === 0 && (
+              <p className="px-4 py-3 text-xs text-muted-foreground">
+                Дополнительных разделов для вашей роли нет
+              </p>
+            )}
+            {secondaryItems.map((item) => {
+              const Icon = item.icon;
+              const active = activeView === item.key;
+              return (
+                <button
+                  key={item.key}
+                  type="button"
+                  onClick={() => {
+                    setActiveView(item.key);
+                    setMoreOpen(false);
+                  }}
+                  aria-current={active ? "page" : undefined}
+                  className={cn(
+                    "w-full flex items-center gap-3 rounded-lg px-3 h-12 text-[15px] font-medium transition-colors",
+                    active ? "bg-sky-light text-azure" : "text-brand hover:bg-muted"
+                  )}
+                >
+                  <Icon className="h-5 w-5 shrink-0" strokeWidth={2} />
+                  {item.label}
+                  {active && <span className="ml-auto h-2 w-2 rounded-full bg-azure" aria-hidden />}
+                </button>
+              );
+            })}
+          </div>
+          {/* Профиль и выход */}
+          <div className="border-t border-border px-4 py-3 pb-[calc(0.75rem+env(safe-area-inset-bottom))] flex items-center gap-3">
+            <Avatar className="h-9 w-9 border border-sky/30">
+              <AvatarFallback className="bg-azure text-white text-xs font-semibold">
+                {initials || "—"}
+              </AvatarFallback>
+            </Avatar>
+            <div className="flex-1 min-w-0">
+              <div className="text-sm font-medium text-brand truncate">{name}</div>
+              <div className="text-[11px] text-muted-foreground truncate">{ROLE_LABELS[role]}</div>
+            </div>
+            <Button
+              variant="outline"
+              size="sm"
+              className="h-10 gap-1.5 border-terra/50 text-terra-dark hover:bg-terra-light hover:text-terra-dark"
+              onClick={() => signOut({ callbackUrl: "/" })}
+            >
+              <LogOut className="h-4 w-4" strokeWidth={2} /> Выйти
+            </Button>
+          </div>
+        </SheetContent>
+      </Sheet>
     </div>
   );
 }
 
-/* ============ Мини-календарь в сайдбаре (только МП) ============ */
+/* ============ Мини-календарь в сайдбаре (только МП, десктоп) ============ */
 
 const cap = (s: string) => s.charAt(0).toUpperCase() + s.slice(1);
 const MINI_WEEKDAYS = ["Пн", "Вт", "Ср", "Чт", "Пт", "Сб", "Вс"];
@@ -288,7 +441,7 @@ function MiniCalendar() {
   const openDay = (day: Date) =>
     setActiveView("calendar", { calendarDate: format(day, "yyyy-MM-dd") });
   return (
-    <div className="hidden md:block px-4 pb-3">
+    <div className="px-4 pb-3">
       <div className="mb-1.5 flex items-center justify-between px-1">
         <span className="font-display text-xs font-semibold text-white">
           {cap(format(monthStart, "LLLL yyyy", { locale: ru }))}
