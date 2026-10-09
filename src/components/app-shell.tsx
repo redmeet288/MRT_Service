@@ -303,7 +303,7 @@ export function AppShell() {
             <span className="flex items-center gap-1.5 min-w-0">
               <LogoMark size={16} />
               <span className="font-medium text-brand whitespace-nowrap">МРТ ТОЧНО</span>
-              <span className="truncate">· CRM направляющих врачей · v1.4</span>
+              <span className="truncate">· CRM направляющих врачей · v1.5</span>
             </span>
             <span className="hidden md:inline">Внутренний сервер · Доступ по ролям · UUID-идентификаторы сущностей</span>
           </div>
