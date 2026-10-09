@@ -22,8 +22,9 @@ export async function PUT(req: NextRequest, { params }: Params) {
     if (!patientName) return badRequest("ФИО пациента не может быть пустым");
     data.patientName = patientName;
   }
-  if (body?.doctorId !== undefined) data.doctorId = String(body.doctorId);
-  if (body?.lpuId !== undefined) data.lpuId = String(body.lpuId);
+  // НВ и ЛПУ необязательны: пустое значение = очистить привязку (доработка)
+  if (body?.doctorId !== undefined) data.doctorId = body.doctorId ? String(body.doctorId) : null;
+  if (body?.lpuId !== undefined) data.lpuId = body.lpuId ? String(body.lpuId) : null;
   // «Куда направление»: пустое значение → «МРТ ТОЧНО» (доработка 1.2)
   if (body?.destination !== undefined) {
     data.destination =

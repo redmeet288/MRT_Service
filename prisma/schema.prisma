@@ -53,6 +53,9 @@ model Lpu {
   id        String   @id @default(uuid())
   name      String
   address   String?
+  // Пометка на удаление (доработка): не удаляется физически, а деактивируется —
+  // исключается из выпадающих списков, история заявок сохраняется
+  isActive  Boolean  @default(true)
   cityId    String
   city      City     @relation(fields: [cityId], references: [id], onDelete: Restrict)
   createdAt DateTime @default(now())
@@ -124,6 +127,9 @@ model Doctor {
   // МП затем закрепляет врача за собой (доработка этапа 1.1)
   mpId           String?
   mp             User?    @relation("DoctorMP", fields: [mpId], references: [id])
+  // Пометка на удаление (доработка): исключается из выпадающих списков,
+  // история заявок и визитов сохраняется
+  isActive       Boolean  @default(true)
   cityId         String?
   city           City?    @relation(fields: [cityId], references: [id])
   comment        String?
@@ -179,10 +185,12 @@ model Request {
   id             String   @id @default(uuid())
   date           DateTime
   patientName    String
-  doctorId       String
-  doctor         Doctor   @relation(fields: [doctorId], references: [id])
-  lpuId          String
-  lpu            Lpu      @relation(fields: [lpuId], references: [id])
+  // НВ и ЛПУ необязательны (доработка): обязателен только пациент —
+  // пациент может не помнить врача, данные уточняются по комментарии
+  doctorId       String?
+  doctor         Doctor?  @relation(fields: [doctorId], references: [id])
+  lpuId          String?
+  lpu            Lpu?     @relation(fields: [lpuId], references: [id])
   // Куда направление (доработка 1.2): пустое значение при создании
   // автоматически заменяется на «МРТ ТОЧНО»
   destination    String? 

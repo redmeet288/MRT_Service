@@ -24,6 +24,8 @@ export interface CityData {
   name: string;
   city: City;
   address: string | null;
+  /** Пометка на удаление (доработка) — исключено из выпадающих списков */
+  isActive: boolean;
   createdAt?: string;
   updatedAt?: string;
   _count?: { doctors: number; requests: number };
@@ -85,6 +87,8 @@ export interface DoctorItem {
   comment: string | null;
   /** График работы НВ (доработка 1.2) — свободный текст */
   workSchedule: string | null;
+  /** Пометка на удаление (доработка) — исключается из выпадающих списков */
+  isActive: boolean;
   /** Специализации (доработка 1.2) — несколько позиций из справочника */
   specializations: { specialization: SpecializationItem }[];
   bonusType: "CASH" | "ACCUMULATIVE" | null;
@@ -102,6 +106,8 @@ export interface LpuWithCity {
   address: string | null;
   cityId: string;
   city: City;
+  /** Пометка на удаление (доработка) */
+  isActive?: boolean;
 }
 
 export interface VisitItem {
@@ -122,10 +128,11 @@ export interface RequestItem {
   id: string;
   date: string;
   patientName: string;
-  doctorId: string;
-  doctor: { id: string; fullName: string; mp: { id: string; name: string } };
-  lpuId: string;
-  lpu: LpuWithCity;
+  // НВ и ЛПУ необязательны (доработка): обязателен только пациент
+  doctorId: string | null;
+  doctor: { id: string; fullName: string; mp: { id: string; name: string } } | null;
+  lpuId: string | null;
+  lpu: LpuWithCity | null;
   destination: string | null;
   /** Что назначено — несколько позиций номенклатуры (доработка 1.2) */
   assignedItems: NomenclatureItem[];

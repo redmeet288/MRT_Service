@@ -371,7 +371,10 @@ export function ReportsView() {
     queryFn: () => api.get("/api/app/doctors"),
   });
   const doctorOptions = useMemo(
-    () => (doctors ?? []).filter((d) => !draft.mpId || d.mpId === draft.mpId),
+    () =>
+      (doctors ?? [])
+        .filter((d) => d.isActive) // помеченные на удаление НВ исключены (доработка)
+        .filter((d) => !draft.mpId || d.mpId === draft.mpId),
     [doctors, draft.mpId]
   );
 
@@ -1043,11 +1046,13 @@ export function ReportsView() {
                 </SelectTrigger>
                 <SelectContent className="max-h-60">
                   <SelectItem value="ALL">Все ЛПУ</SelectItem>
-                  {(lpus ?? []).map((l) => (
-                    <SelectItem key={l.id} value={l.id}>
-                      {l.name}
-                    </SelectItem>
-                  ))}
+                  {(lpus ?? [])
+                    .filter((l) => l.isActive)
+                    .map((l) => (
+                      <SelectItem key={l.id} value={l.id}>
+                        {l.name}
+                      </SelectItem>
+                    ))}
                 </SelectContent>
               </Select>
             </div>

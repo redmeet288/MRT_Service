@@ -71,6 +71,7 @@ import {
   MapPin,
   Pencil,
   Plus,
+  RotateCcw,
   Search,
   Stethoscope,
   Tag,
@@ -287,15 +288,20 @@ function DictSearch({
   );
 }
 
-/** Действия в строке: редактирование (по клику на название/карандаш) + удаление */
+/** Действия в строке: редактирование + пометка на удаление / восстановление */
 function DictRowActions({
   name,
   onEdit,
   onDelete,
+  active = true,
+  onRestore,
 }: {
   name: string;
   onEdit: () => void;
   onDelete: () => Promise<void>;
+  /** false — запись помечена на удаление: вместо удаления показываем восстановление */
+  active?: boolean;
+  onRestore?: () => Promise<void>;
 }) {
   return (
     <div className="flex items-center gap-1">
@@ -309,11 +315,24 @@ function DictRowActions({
       >
         <Pencil className="h-4 w-4" strokeWidth={2} />
       </Button>
-      <DeleteButton
-        title={`Удалить «${name}»?`}
-        description="Действие будет зафиксировано в журнале аудита."
-        onConfirm={onDelete}
-      />
+      {active || !onRestore ? (
+        <DeleteButton
+          title={`Пометить «${name}» на удаление?`}
+          description="Запись не удаляется физически: останется в списке с пометкой и будет исключена из выпадающих списков. Действие будет зафиксировано в журнале аудита."
+          onConfirm={onDelete}
+        />
+      ) : (
+        <Button
+          variant="ghost"
+          size="icon"
+          className="h-8 w-8 text-terra hover:text-brand"
+          onClick={() => void onRestore()}
+          aria-label={`Вернуть «${name}» в работу`}
+          title="Вернуть в работу (снять пометку на удаление)"
+        >
+          <RotateCcw className="h-4 w-4" strokeWidth={2} />
+        </Button>
+      )}
     </div>
   );
 }
@@ -601,7 +620,16 @@ function LpusSection() {
   const remove = useMutation({
     mutationFn: (id: string) => api.del(`/api/app/lpus?id=${id}`),
     onSuccess: () => {
-      toast.success("ЛПУ удалено");
+      toast.success("ЛПУ помечено на удаление");
+      qc.invalidateQueries({ queryKey: ["lpus"] });
+    },
+    onError: (e: Error) => toast.error(e.message),
+  });
+
+  const restore = useMutation({
+    mutationFn: (l: CityData) => api.put("/api/app/lpus", { id: l.id, isActive: true }),
+    onSuccess: () => {
+      toast.success("ЛПУ возвращено в работу");
       qc.invalidateQueries({ queryKey: ["lpus"] });
     },
     onError: (e: Error) => toast.error(e.message),
@@ -611,14 +639,27 @@ function LpusSection() {
     switch (key) {
       case "name":
         return (
-          <button
-            type="button"
-            className="font-medium text-azure hover:underline text-left"
-            title="Изменить"
-            onClick={() => setDialog({ mode: "edit", lpu: l })}
-          >
-            {l.name}
-          </button>
+          <div className="flex flex-col items-start gap-1">
+            <button
+              type="button"
+              className={cn(
+                "font-medium text-left hover:underline",
+                l.isActive ? "text-azure" : "text-muted-foreground line-through"
+              )}
+              title="Изменить"
+              onClick={() => setDialog({ mode: "edit", lpu: l })}
+            >
+              {l.name}
+            </button>
+            {!l.isActive && (
+              <Badge
+                variant="outline"
+                className="border-terra/50 bg-terra-light text-terra-dark text-[10px]"
+              >
+                Помечено на удаление
+              </Badge>
+            )}
+          </div>
         );
       case "city":
         return l.city.name;
@@ -691,7 +732,11 @@ function LpusSection() {
                           <td>
                             <DictRowActions
                               name={l.name}
+                              active={l.isActive}
                               onEdit={() => setDialog({ mode: "edit", lpu: l })}
+                              onRestore={async () => {
+                                await restore.mutateAsync(l).catch(() => undefined);
+                              }}
                               onDelete={async () => {
                                 await remove.mutateAsync(l.id).catch(() => undefined);
                               }}
@@ -835,8 +880,18 @@ function NomenclatureSection() {
 
   const remove = useMutation({
     mutationFn: (id: string) => api.del<{ deactivated?: boolean }>(`/api/app/nomenclature?id=${id}`),
-    onSuccess: (r: { deactivated?: boolean }) => {
-      toast.success(r.deactivated ? "Позиция используется — деактивирована" : "Позиция удалена");
+    onSuccess: () => {
+      toast.success("Позиция помечена на удаление");
+      qc.invalidateQueries({ queryKey: ["nomenclature"] });
+    },
+    onError: (e: Error) => toast.error(e.message),
+  });
+
+  const restore = useMutation({
+    mutationFn: (n: NomenclatureItem) =>
+      api.put("/api/app/nomenclature", { id: n.id, isActive: true }),
+    onSuccess: () => {
+      toast.success("Позиция возвращена в работу");
       qc.invalidateQueries({ queryKey: ["nomenclature"] });
     },
     onError: (e: Error) => toast.error(e.message),
@@ -929,7 +984,11 @@ function NomenclatureSection() {
                           <td>
                             <DictRowActions
                               name={n.name}
+                              active={n.isActive}
                               onEdit={() => setDialog({ mode: "edit", item: n })}
+                              onRestore={async () => {
+                                await restore.mutateAsync(n).catch(() => undefined);
+                              }}
                               onDelete={async () => {
                                 await remove.mutateAsync(n.id).catch(() => undefined);
                               }}
@@ -1061,8 +1120,19 @@ function SpecializationsSection() {
 
   const remove = useMutation({
     mutationFn: (id: string) => api.del<{ deactivated?: boolean }>(`/api/app/specializations?id=${id}`),
-    onSuccess: (r: { deactivated?: boolean }) => {
-      toast.success(r.deactivated ? "Специализация используется — деактивирована" : "Специализация удалена");
+    onSuccess: () => {
+      toast.success("Специализация помечена на удаление");
+      qc.invalidateQueries({ queryKey: ["specializations"] });
+      qc.invalidateQueries({ queryKey: ["doctors"] });
+    },
+    onError: (e: Error) => toast.error(e.message),
+  });
+
+  const restore = useMutation({
+    mutationFn: (s: SpecializationItem) =>
+      api.put("/api/app/specializations", { id: s.id, isActive: true }),
+    onSuccess: () => {
+      toast.success("Специализация возвращена в работу");
       qc.invalidateQueries({ queryKey: ["specializations"] });
       qc.invalidateQueries({ queryKey: ["doctors"] });
     },
@@ -1156,7 +1226,11 @@ function SpecializationsSection() {
                           <td>
                             <DictRowActions
                               name={s.name}
+                              active={s.isActive}
                               onEdit={() => setDialog({ mode: "edit", item: s })}
+                              onRestore={async () => {
+                                await restore.mutateAsync(s).catch(() => undefined);
+                              }}
                               onDelete={async () => {
                                 await remove.mutateAsync(s.id).catch(() => undefined);
                               }}

@@ -119,10 +119,24 @@ export function VisitDialog({
     queryFn: () => api.get("/api/app/doctors"),
   });
 
+  // Варианты НВ: активные; врач редактируемого визита показывается, даже если помечен на удаление
+  const doctorOptions = useMemo<Array<Pick<DoctorItem, "id" | "fullName">>>(() => {
+    const list = (doctors ?? [])
+      .filter((d) => d.isActive)
+      .map((d) => ({ id: d.id, fullName: d.fullName }));
+    const cur = editing?.doctor;
+    if (cur && !list.some((d) => d.id === cur.id)) {
+      list.unshift({ id: cur.id, fullName: cur.fullName });
+    }
+    return list;
+  }, [doctors, editing]);
+
   // —— Опции ЛПУ из привязок выбранного врача ——
   const selectedDoctor = (doctors ?? []).find((d) => d.id === form.doctorId);
   const lpuOptions = useMemo(() => {
-    const opts: LpuWithCity[] = (selectedDoctor?.lpus ?? []).map((x) => x.lpu);
+    const opts: LpuWithCity[] = (selectedDoctor?.lpus ?? [])
+      .map((x) => x.lpu)
+      .filter((l) => l.isActive !== false);
     const editLpu = editing?.lpu ?? null;
     if (editLpu && !opts.some((o) => o.id === editLpu.id)) {
       opts.unshift(editLpu);
@@ -205,7 +219,7 @@ export function VisitDialog({
                 <SelectValue placeholder="Выберите врача" />
               </SelectTrigger>
               <SelectContent className="max-h-60">
-                {(doctors ?? []).map((d) => (
+                {doctorOptions.map((d) => (
                   <SelectItem key={d.id} value={d.id}>
                     {d.fullName}
                   </SelectItem>

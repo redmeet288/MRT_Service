@@ -105,6 +105,7 @@ const DATA_DICT: EntityDoc[] = [
     fields: [
       { f: "id", t: PK, d: "Стабильный идентификатор" },
       { f: "fullName", t: "String", d: "ФИО врача" },
+      { f: "isActive", t: "Boolean · true", d: "Пометка на удаление: исключается из выпадающих списков" },
       { f: "phone", t: "String?", d: "Телефон" },
       { f: "birthDate", t: "DateTime?", d: "Дата рождения" },
       { f: "statusId", t: "→ CooperationStatus?", d: "Статус сотрудничества" },
@@ -138,9 +139,9 @@ const DATA_DICT: EntityDoc[] = [
     fields: [
       { f: "id", t: PK, d: "Стабильный идентификатор" },
       { f: "date", t: "DateTime", d: "Дата заявки (индекс)" },
-      { f: "patientName", t: "String", d: "ФИО пациента" },
-      { f: "doctorId", t: "→ Doctor", d: "Направляющий врач (индекс)" },
-      { f: "lpuId", t: "→ Lpu", d: "ЛПУ направления (индекс)" },
+      { f: "patientName", t: "String", d: "ФИО пациента (единственное обязательное поле)" },
+      { f: "doctorId", t: "→ Doctor?", d: "Направляющий врач (необязателен, индекс)" },
+      { f: "lpuId", t: "→ Lpu?", d: "ЛПУ направления (необязательно, индекс)" },
       { f: "destination", t: "String?", d: "Куда направление" },
       { f: "assignedId", t: "→ Nomenclature?", d: "Что назначено" },
       { f: "doneId", t: "→ Nomenclature?", d: "Что сделано" },
@@ -264,7 +265,7 @@ const API_GROUPS: GroupDoc[] = [
     title: "Заявки",
     endpoints: [
       { m: "GET", p: "/api/app/requests", d: "Список заявок (дата, пациент, НВ, ЛПУ, назначено/сделано)" },
-      { m: "POST", p: "/api/app/requests", d: "Создать заявку { date, patientName, doctorId, lpuId, destination?, assignedId?, doneId? }; authorId — из сессии" },
+      { m: "POST", p: "/api/app/requests", d: "Создать заявку { date, patientName, doctorId?, lpuId?, destination?, assignedIds?, doneIds?, comment? }; обязателен только patientName" },
       { m: "PUT", p: "/api/app/requests/[id]", d: "Обновить заявку (в т.ч. отметка «что сделано»)" },
       { m: "DELETE", p: "/api/app/requests/[id]", d: "Удалить заявку" },
     ],

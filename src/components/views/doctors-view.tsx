@@ -81,6 +81,7 @@ import {
 import { useUiStore } from "@/store/ui";
 import { DictImportExport } from "@/components/shared/dict-io";
 import { useDictColumns, type DictCol } from "@/components/shared/dict-columns";
+import { cn } from "@/lib/utils";
 
 /** Пользователь сессии: JWT-колбэк кладет uid и role (типизация next-auth по умолчанию их не знает) */
 type SessionUserWithRole = { uid?: string; role?: Role } | undefined;
@@ -213,11 +214,23 @@ export function DoctorsView() {
   // Циклическая смена направления сортировки: нет → asc → desc → нет
   const handleSort = (field: string) => setSort((s) => cycleSort(s, field));
 
-  // Удаление врача — только МП (кнопка в строке)
+  // Пометка на удаление — только МП (кнопка в строке; физического удаления нет)
   const removeDoctor = useMutation({
     mutationFn: (id: string) => api.del(`/api/app/doctors/${id}`),
     onSuccess: () => {
-      toast.success("Врач удален");
+      toast.success("Врач помечен на удаление");
+      qc.invalidateQueries({ queryKey: ["doctors"] });
+      qc.invalidateQueries({ queryKey: ["doctor-card"] });
+      qc.invalidateQueries({ queryKey: ["dashboard"] });
+    },
+    onError: (e: Error) => toast.error(e.message),
+  });
+
+  // Восстановление врача из пометки на удаление
+  const restoreDoctor = useMutation({
+    mutationFn: (id: string) => api.put(`/api/app/doctors/${id}`, { isActive: true }),
+    onSuccess: () => {
+      toast.success("Врач восстановлен");
       qc.invalidateQueries({ queryKey: ["doctors"] });
       qc.invalidateQueries({ queryKey: ["doctor-card"] });
       qc.invalidateQueries({ queryKey: ["dashboard"] });
@@ -356,17 +369,36 @@ export function DoctorsView() {
                                 >
                                   <Pencil className="h-4 w-4" strokeWidth={2} />
                                 </Button>
-                                <DeleteButton
-                                  title={`Удалить врача «${d.fullName}»?`}
-                                  description="Будут удалены карточка врача, привязки к ЛПУ, визиты и заявки. Действие будет зафиксировано в журнале аудита."
-                                  onConfirm={async () => {
-                                    try {
-                                      await removeDoctor.mutateAsync(d.id);
-                                    } catch (e) {
-                                      toast.error((e as Error).message);
-                                    }
-                                  }}
-                                />
+                                {d.isActive ? (
+                                  <DeleteButton
+                                    title={`Пометить врача «${d.fullName}» на удаление?`}
+                                    description="Врач не удаляется физически: карточка останется в базе с пометкой, врач будет исключен из выпадающих списков. История заявок и визитов сохранится. Действие будет зафиксировано в журнале аудита."
+                                    onConfirm={async () => {
+                                      try {
+                                        await removeDoctor.mutateAsync(d.id);
+                                      } catch (e) {
+                                        toast.error((e as Error).message);
+                                      }
+                                    }}
+                                  />
+                                ) : (
+                                  <Button
+                                    variant="ghost"
+                                    size="icon"
+                                    className="h-8 w-8 text-terra hover:text-brand"
+                                    onClick={async () => {
+                                      try {
+                                        await restoreDoctor.mutateAsync(d.id);
+                                      } catch (e) {
+                                        toast.error((e as Error).message);
+                                      }
+                                    }}
+                                    aria-label={`Вернуть врача ${d.fullName} в работу`}
+                                    title="Вернуть в работу (снять пометку на удаление)"
+                                  >
+                                    <RotateCcw className="h-4 w-4" strokeWidth={2} />
+                                  </Button>
+                                )}
                               </div>
                             ) : (
                               <span className="text-xs italic text-muted-foreground">—</span>
@@ -409,14 +441,27 @@ function renderDoctorCell(
   switch (key) {
     case "fullName":
       return (
-        <button
-          type="button"
-          onClick={() => onOpenCard(doctor.id)}
-          className="font-medium text-azure hover:underline"
-          title="Открыть карточку врача"
-        >
-          {doctor.fullName}
-        </button>
+        <div className="flex flex-col items-start gap-1">
+          <button
+            type="button"
+            onClick={() => onOpenCard(doctor.id)}
+            className={cn(
+              "font-medium text-azure hover:underline",
+              !doctor.isActive && "text-muted-foreground line-through"
+            )}
+            title="Открыть карточку врача"
+          >
+            {doctor.fullName}
+          </button>
+          {!doctor.isActive && (
+            <Badge
+              variant="outline"
+              className="border-terra/50 bg-terra-light text-terra-dark text-[10px]"
+            >
+              Помечен на удаление
+            </Badge>
+          )}
+        </div>
       );
     case "status":
       return doctor.status ? (
@@ -572,8 +617,10 @@ function DoctorFormDialog({
     queryFn: () => api.get("/api/app/lpus"),
   });
   const { data: specializations } = useQuery<SpecializationItem[]>({
-    queryKey: ["specializations", "active"],
-    queryFn: () => api.get("/api/app/specializations?active=1"),
+    // Полный справочник: помеченные на удаление показываются только если
+    // уже выбраны у врача — чтобы их можно было снять/сохранить осознанно
+    queryKey: ["specializations", "all"],
+    queryFn: () => api.get("/api/app/specializations"),
   });
 
   const mps = useMemo(() => (users ?? []).filter((u) => u.role === "MP"), [users]);
@@ -770,24 +817,37 @@ function DoctorFormDialog({
                   Сначала добавьте ЛПУ в разделе «Справочники»
                 </p>
               ) : (
-                lpus.map((l) => (
-                  <label
-                    key={l.id}
-                    className="flex cursor-pointer items-center gap-2.5 rounded-md px-2 py-1.5 hover:bg-sky-light/60"
-                  >
-                    <Checkbox
-                      checked={form.lpuIds.includes(l.id)}
-                      onCheckedChange={(c) => toggleLpu(l.id, c === true)}
-                      aria-label={`Привязать ${l.name}`}
-                    />
-                    <span className="text-sm text-brand">{l.name}</span>
-                    <span className="text-xs text-muted-foreground">· {l.city.name}</span>
-                  </label>
-                ))
+                lpus
+                  .filter((l) => l.isActive || form.lpuIds.includes(l.id))
+                  .map((l) => (
+                    <label
+                      key={l.id}
+                      className="flex cursor-pointer items-center gap-2.5 rounded-md px-2 py-1.5 hover:bg-sky-light/60"
+                    >
+                      <Checkbox
+                        checked={form.lpuIds.includes(l.id)}
+                        onCheckedChange={(c) => toggleLpu(l.id, c === true)}
+                        aria-label={`Привязать ${l.name}`}
+                      />
+                      <span
+                        className={cn(
+                          "text-sm",
+                          l.isActive ? "text-brand" : "text-muted-foreground line-through"
+                        )}
+                      >
+                        {l.name}
+                      </span>
+                      <span className="text-xs text-muted-foreground">· {l.city.name}</span>
+                      {!l.isActive && (
+                        <span className="text-[10px] text-terra-dark">(помечено на удаление)</span>
+                      )}
+                    </label>
+                  ))
               )}
             </div>
             <p className="text-[11px] text-muted-foreground">
-              При выборе ЛПУ и незаполненном городе подставляется город первого ЛПУ
+              При выборе ЛПУ и незаполненном городе подставляется город первого ЛПУ. ЛПУ с пометкой
+              «на удаление» скрыты (кроме уже выбранных)
             </p>
           </div>
 
@@ -805,19 +865,31 @@ function DoctorFormDialog({
                   Сначала добавьте специализации в разделе «Справочники»
                 </p>
               ) : (
-                specializations.map((s) => (
-                  <label
-                    key={s.id}
-                    className="flex cursor-pointer items-center gap-2.5 rounded-md px-2 py-1.5 hover:bg-sky-light/60"
-                  >
-                    <Checkbox
-                      checked={form.specializationIds.includes(s.id)}
-                      onCheckedChange={(c) => toggleSpecialization(s.id, c === true)}
-                      aria-label={`Специализация ${s.name}`}
-                    />
-                    <span className="text-sm text-brand">{s.name}</span>
-                  </label>
-                ))
+                specializations
+                  .filter((s) => s.isActive || form.specializationIds.includes(s.id))
+                  .map((s) => (
+                    <label
+                      key={s.id}
+                      className="flex cursor-pointer items-center gap-2.5 rounded-md px-2 py-1.5 hover:bg-sky-light/60"
+                    >
+                      <Checkbox
+                        checked={form.specializationIds.includes(s.id)}
+                        onCheckedChange={(c) => toggleSpecialization(s.id, c === true)}
+                        aria-label={`Специализация ${s.name}`}
+                      />
+                      <span
+                        className={cn(
+                          "text-sm",
+                          s.isActive ? "text-brand" : "text-muted-foreground line-through"
+                        )}
+                      >
+                        {s.name}
+                      </span>
+                      {!s.isActive && (
+                        <span className="text-[10px] text-terra-dark">(помечена на удаление)</span>
+                      )}
+                    </label>
+                  ))
               )}
             </div>
           </div>
@@ -886,16 +958,28 @@ function DoctorCardDialog({
     queryFn: () => api.get(`/api/app/doctors/${doctorId}`),
   });
 
-  // Удаление врача — только МП
+  // Пометка на удаление — только МП (физического удаления нет)
   const removeDoctor = useMutation({
     mutationFn: (id: string) => api.del(`/api/app/doctors/${id}`),
     onSuccess: () => {
-      toast.success("Врач удален");
+      toast.success("Врач помечен на удаление");
       onOpenChange(false);
       qc.invalidateQueries({ queryKey: ["doctors"] });
       qc.invalidateQueries({ queryKey: ["doctor-card"] });
       qc.invalidateQueries({ queryKey: ["dashboard"] });
     },
+  });
+
+  // Восстановление врача из пометки на удаление
+  const restoreDoctor = useMutation({
+    mutationFn: (id: string) => api.put(`/api/app/doctors/${id}`, { isActive: true }),
+    onSuccess: () => {
+      toast.success("Врач восстановлен");
+      qc.invalidateQueries({ queryKey: ["doctors"] });
+      qc.invalidateQueries({ queryKey: ["doctor-card"] });
+      qc.invalidateQueries({ queryKey: ["dashboard"] });
+    },
+    onError: (e: Error) => toast.error(e.message),
   });
 
   // Запланировать визит
@@ -978,6 +1062,14 @@ function DoctorCardDialog({
                 <DialogTitle className="flex flex-wrap items-center gap-2 font-display text-lg text-brand">
                   <span className="truncate">{card?.fullName ?? "Карточка врача"}</span>
                   {card?.status && <StatusPill status={card.status} />}
+                  {card && !card.isActive && (
+                    <Badge
+                      variant="outline"
+                      className="border-terra/50 bg-terra-light text-terra-dark text-[10px]"
+                    >
+                      Помечен на удаление
+                    </Badge>
+                  )}
                 </DialogTitle>
                 <DialogDescription className="flex flex-wrap items-center gap-x-4 gap-y-1 text-xs">
                   <span className="inline-flex items-center gap-1">
@@ -999,17 +1091,35 @@ function DoctorCardDialog({
                 </DialogDescription>
               </div>
               {isMP && card && (
-                <DeleteButton
-                  title={`Удалить врача «${card.fullName}»?`}
-                  description="Будут удалены карточка врача, привязки к ЛПУ, визиты и заявки. Действие будет зафиксировано в журнале аудита."
-                  onConfirm={async () => {
-                    try {
-                      await removeDoctor.mutateAsync(card.id);
-                    } catch (e) {
-                      toast.error((e as Error).message);
-                    }
-                  }}
-                />
+                card.isActive ? (
+                  <DeleteButton
+                    title={`Пометить врача «${card.fullName}» на удаление?`}
+                    description="Врач не удаляется физически: карточка останется в базе с пометкой, врач будет исключен из выпадающих списков. История заявок и визитов сохранится. Действие будет зафиксировано в журнале аудита."
+                    onConfirm={async () => {
+                      try {
+                        await removeDoctor.mutateAsync(card.id);
+                      } catch (e) {
+                        toast.error((e as Error).message);
+                      }
+                    }}
+                  />
+                ) : (
+                  <Button
+                    variant="outline"
+                    size="sm"
+                    className="gap-1.5 border-terra/50 text-terra-dark hover:bg-terra-light"
+                    onClick={async () => {
+                      try {
+                        await restoreDoctor.mutateAsync(card.id);
+                      } catch (e) {
+                        toast.error((e as Error).message);
+                      }
+                    }}
+                  >
+                    <RotateCcw className="h-4 w-4" strokeWidth={2} />
+                    Вернуть в работу
+                  </Button>
+                )
               )}
             </div>
           </DialogHeader>
@@ -1237,11 +1347,14 @@ function DoctorCardDialog({
                           </SelectTrigger>
                           <SelectContent>
                             <SelectItem value={NONE}>Без привязки к ЛПУ</SelectItem>
-                            {card.lpus.map(({ lpu }) => (
-                              <SelectItem key={lpu.id} value={lpu.id}>
-                                {lpu.name} · {lpu.city.name}
-                              </SelectItem>
-                            ))}
+                            {card.lpus
+                              .map(({ lpu }) => lpu)
+                              .filter((lpu) => lpu.isActive !== false)
+                              .map((lpu) => (
+                                <SelectItem key={lpu.id} value={lpu.id}>
+                                  {lpu.name} · {lpu.city.name}
+                                </SelectItem>
+                              ))}
                           </SelectContent>
                         </Select>
                       </div>

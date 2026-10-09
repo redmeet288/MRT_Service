@@ -144,10 +144,10 @@ export function AppShell() {
       <aside className="w-[68px] md:w-64 shrink-0 bg-sidebar text-sidebar-foreground flex flex-col sticky top-0 h-screen transition-[width] duration-200">
         <div className="px-5 pt-6 pb-5 flex justify-center md:justify-start">
           <span className="hidden md:block">
-            <LogoFull markSize={38} variant="light" />
+            <LogoFull height={34} variant="light" />
           </span>
           <span className="md:hidden">
-            <LogoMark size={34} />
+            <LogoMark size={34} variant="light" />
           </span>
         </div>
         <nav className="flex-1 overflow-y-auto px-3 pb-4" aria-label="Основная навигация">

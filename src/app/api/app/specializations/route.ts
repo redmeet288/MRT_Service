@@ -39,14 +39,34 @@ export async function POST(req: NextRequest) {
   return NextResponse.json(item, { status: 201 });
 }
 
-// PUT /api/app/specializations — редактирование
+// PUT /api/app/specializations — редактирование.
+// Поддерживается частичное обновление: { id, isActive } — для восстановления
+// из пометки на удаление без передачи остальных полей.
 export async function PUT(req: NextRequest) {
   const { session, error } = await requireAuth();
   if (error) return error;
   const body = await req.json().catch(() => null);
   const id = String(body?.id ?? "");
-  const name = String(body?.name ?? "").trim();
   if (!id) return badRequest("Не указан id");
+
+  // Частичный режим: только переключение пометки на удаление
+  if (body?.name === undefined) {
+    if (body?.isActive === undefined) return badRequest("Нет данных для обновления");
+    const item = await db.specialization
+      .update({ where: { id }, data: { isActive: Boolean(body.isActive) } })
+      .catch(() => null);
+    if (!item) return notFound("Специализация не найдена");
+    await audit(
+      session,
+      "UPDATE",
+      "specialization",
+      id,
+      body.isActive ? `Специализация: ${item.name} — возвращена в работу` : `Специализация: ${item.name} — помечена на удаление`
+    );
+    return NextResponse.json(item);
+  }
+
+  const name = String(body.name).trim();
   if (!name) return badRequest("Укажите название специализации");
   const dup = await db.specialization.findFirst({ where: { name, NOT: { id } } });
   if (dup) return badRequest("Такая специализация уже существует");
@@ -65,20 +85,17 @@ export async function PUT(req: NextRequest) {
 }
 
 // DELETE /api/app/specializations?id=... — только МП.
-// Если специализация привязана к НВ — деактивация вместо удаления.
+// Специализация НЕ удаляется физически, а помечается на удаление (isActive=false):
+// исключается из выпадающих списков, привязки НВ сохраняются.
 export async function DELETE(req: NextRequest) {
   const { session, error } = await requireMP();
   if (error) return error;
   const id = req.nextUrl.searchParams.get("id");
   if (!id) return badRequest("Не указан id");
-  const used = await db.doctorSpecialization.findFirst({ where: { specializationId: id } });
-  if (used) {
-    const item = await db.specialization.update({ where: { id }, data: { isActive: false } });
-    await audit(session, "UPDATE", "specialization", id, `Деактивирована: ${item.name}`);
-    return NextResponse.json({ ok: true, deactivated: true });
-  }
-  const item = await db.specialization.delete({ where: { id } }).catch(() => null);
+  const item = await db.specialization
+    .update({ where: { id }, data: { isActive: false } })
+    .catch(() => null);
   if (!item) return notFound("Специализация не найдена");
-  await audit(session, "DELETE", "specialization", id, `Специализация: ${item.name}`);
-  return NextResponse.json({ ok: true });
+  await audit(session, "DELETE", "specialization", id, `Специализация: ${item.name} — помечена на удаление`);
+  return NextResponse.json({ ok: true, deactivated: true });
 }

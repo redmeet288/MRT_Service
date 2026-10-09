@@ -40,7 +40,7 @@ export function LoginView() {
       <div className="hidden lg:flex flex-col justify-between w-[44%] bg-brand-deep relative overflow-hidden">
         <div className="mrt-pattern absolute inset-0" />
         <div className="relative p-10 flex items-center gap-4">
-          <LogoFull markSize={64} variant="light" />
+          <LogoFull height={64} variant="light" />
         </div>
         <div className="relative px-10 pb-10">
           <div className="inline-flex items-center gap-2 rounded-full bg-white/10 border border-white/20 px-4 py-1.5 text-xs font-medium text-sky-light mb-6">
@@ -61,7 +61,7 @@ export function LoginView() {
       <div className="flex-1 flex items-center justify-center p-6">
         <div className="w-full max-w-md">
           <div className="lg:hidden mb-8 flex justify-center">
-            <LogoFull markSize={48} />
+            <LogoFull height={48} />
           </div>
           <Card className="border-border shadow-[0_8px_32px_rgba(25,70,136,0.08)] rounded-xl">
             <CardContent className="p-8">

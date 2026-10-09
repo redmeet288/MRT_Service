@@ -42,7 +42,7 @@ import {
   TableHeader,
   TableRow,
 } from "@/components/ui/table";
-import { Plus, Pencil, Users2, ShieldCheck, KeyRound } from "lucide-react";
+import { Plus, Pencil, RotateCcw, Users2, ShieldCheck, KeyRound } from "lucide-react";
 
 interface UserForm {
   login: string;
@@ -140,7 +140,17 @@ function UsersTable({ currentUserId }: { currentUserId: string }) {
   const deactivate = useMutation({
     mutationFn: (id: string) => api.del(`/api/app/users/${id}`),
     onSuccess: () => {
-      toast.success("Пользователь деактивирован");
+      toast.success("Пользователь помечен на удаление — вход заблокирован");
+      qc.invalidateQueries({ queryKey: ["users"] });
+    },
+    onError: (e: Error) => toast.error(e.message),
+  });
+
+  // Восстановление пользователя из пометки на удаление
+  const restore = useMutation({
+    mutationFn: (id: string) => api.put(`/api/app/users/${id}`, { isActive: true }),
+    onSuccess: () => {
+      toast.success("Пользователь возвращен в работу");
       qc.invalidateQueries({ queryKey: ["users"] });
     },
     onError: (e: Error) => toast.error(e.message),
@@ -228,7 +238,7 @@ function UsersTable({ currentUserId }: { currentUserId: string }) {
                         </Badge>
                       ) : (
                         <Badge variant="outline" className="border-terra/60 bg-terra-light text-terra-dark">
-                          Деактивирован
+                          Помечен на удаление
                         </Badge>
                       )}
                     </TableCell>
@@ -245,10 +255,22 @@ function UsersTable({ currentUserId }: { currentUserId: string }) {
                         </Button>
                         {u.isActive && u.id !== currentUserId && (
                           <DeleteButton
-                            title={`Деактивировать «${u.name}»?`}
-                            description="Пользователь не удаляется, а деактивируется — вход в систему будет заблокирован. МП нельзя деактивировать, пока за ним закреплены врачи. Действие будет зафиксировано в журнале аудита."
+                            title={`Пометить «${u.name}» на удаление?`}
+                            description="Пользователь не удаляется физически: учетная запись останется в списке с пометкой, вход в систему будет заблокирован, пользователь будет исключен из выпадающих списков. МП нельзя помечать на удаление, пока за ним закреплены врачи. Действие будет зафиксировано в журнале аудита."
                             onConfirm={async () => { await deactivate.mutateAsync(u.id); }}
                           />
+                        )}
+                        {!u.isActive && (
+                          <Button
+                            variant="ghost"
+                            size="icon"
+                            className="h-8 w-8 text-terra hover:text-brand"
+                            onClick={() => restore.mutate(u.id)}
+                            aria-label={`Вернуть ${u.name} в работу`}
+                            title="Вернуть в работу (снять пометку на удаление)"
+                          >
+                            <RotateCcw className="h-4 w-4" strokeWidth={2} />
+                          </Button>
                         )}
                       </div>
                     </TableCell>

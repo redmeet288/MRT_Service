@@ -20,11 +20,11 @@ type FlatRow = {
   assigned: string | null;
   done: string | null;
   bonus: number | null;
-  doctorId: string;
+  doctorId: string | null;
   doctorName: string;
   mpId: string | null;
   mpName: string;
-  lpuId: string;
+  lpuId: string | null;
   lpuName: string;
   cityName: string;
   assignedId_: string | null;
@@ -103,12 +103,13 @@ export async function GET(req: NextRequest) {
       done: doneItems.join(", ") || null,
       bonus: r.bonusAmount ?? null, // задел: колонка скрыта на старте
       doctorId: r.doctorId,
-      doctorName: r.doctor.fullName,
-      mpId: r.doctor.mpId,
-      mpName: r.doctor.mp?.name ?? "Без МП",
+      // НВ/ЛПУ необязательны (доработка): в отчет попадают как «Без НВ» / «Без ЛПУ»
+      doctorName: r.doctor?.fullName ?? "Без НВ",
+      mpId: r.doctor?.mpId ?? null,
+      mpName: r.doctor?.mp?.name ?? "Без МП",
       lpuId: r.lpuId,
-      lpuName: r.lpu.name,
-      cityName: r.lpu.city?.name ?? "",
+      lpuName: r.lpu?.name ?? "Без ЛПУ",
+      cityName: r.lpu?.city?.name ?? "",
       assignedId_: firstAssigned?.nomenclatureId ?? r.assignedId,
       assignedName: firstAssigned?.nomenclature.name ?? "Не указано",
     };
@@ -124,9 +125,9 @@ export async function GET(req: NextRequest) {
         case "mp":
           return { key: `mp:${r.mpId ?? "none"}`, id: r.mpId ?? "none", name: r.mpName, subtitle: "" };
         case "lpu":
-          return { key: `lpu:${r.lpuId}`, id: r.lpuId, name: r.lpuName, subtitle: r.cityName };
+          return { key: `lpu:${r.lpuId ?? "none"}`, id: r.lpuId ?? "none", name: r.lpuName, subtitle: r.cityName };
         case "doctor":
-          return { key: `doc:${r.doctorId}`, id: r.doctorId, name: r.doctorName, subtitle: r.lpuName };
+          return { key: `doc:${r.doctorId ?? "none"}`, id: r.doctorId ?? "none", name: r.doctorName, subtitle: r.lpuName };
         case "nomenclature":
           return { key: `nom:${r.assignedId_ ?? "none"}`, id: r.assignedId_ ?? "none", name: r.assignedName, subtitle: "" };
         default:
@@ -200,14 +201,14 @@ export async function GET(req: NextRequest) {
         mpMap.set(mpKey, { id: mpKey, name: r.mpName, total: 0, done: 0, lpus: new Map() });
       }
       const mp = mpMap.get(mpKey)!;
-      const lpuKey = r.lpuId;
+      const lpuKey = r.lpuId ?? "none";
       if (!mp.lpus.has(lpuKey)) {
         mp.lpus.set(lpuKey, {
           id: lpuKey, name: r.lpuName, city: r.cityName, total: 0, done: 0, doctors: new Map(),
         });
       }
       const lpu = mp.lpus.get(lpuKey)!;
-      const dKey = r.doctorId;
+      const dKey = r.doctorId ?? "none";
       if (!lpu.doctors.has(dKey)) {
         lpu.doctors.set(dKey, { id: dKey, name: r.doctorName, total: 0, done: 0, requests: [] });
       }

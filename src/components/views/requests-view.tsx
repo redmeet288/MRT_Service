@@ -49,6 +49,8 @@ import { ClipboardList, MessageSquare, Pencil, Plus, RotateCcw } from "lucide-re
 import { useUiStore } from "@/store/ui";
 
 const ALL = "__all__";
+/** Сентинел «не указан» для Radix Select (пустое value запрещено) */
+const NONE = "__none__";
 
 /** Пользователь сессии: JWT-колбэк кладет uid и role (типизация next-auth по умолчанию их не знает) */
 type SessionUserWithRole = { uid?: string; role?: Role } | undefined;
@@ -170,9 +172,9 @@ export function RequestsView() {
           case "patient":
             return r.patientName;
           case "doctor":
-            return r.doctor.fullName;
+            return r.doctor?.fullName ?? "";
           case "lpu":
-            return r.lpu.name;
+            return r.lpu?.name ?? "";
           case "destination":
             return r.destination ?? "";
           case "assigned":
@@ -249,11 +251,13 @@ export function RequestsView() {
                 </SelectTrigger>
                 <SelectContent className="max-h-72">
                   <SelectItem value={ALL}>Все НВ</SelectItem>
-                  {(doctors ?? []).map((d) => (
-                    <SelectItem key={d.id} value={d.id}>
-                      {d.fullName}
-                    </SelectItem>
-                  ))}
+                  {(doctors ?? [])
+                    .filter((d) => d.isActive)
+                    .map((d) => (
+                      <SelectItem key={d.id} value={d.id}>
+                        {d.fullName}
+                      </SelectItem>
+                    ))}
                 </SelectContent>
               </Select>
             </div>
@@ -268,11 +272,13 @@ export function RequestsView() {
                 </SelectTrigger>
                 <SelectContent className="max-h-72">
                   <SelectItem value={ALL}>Все ЛПУ</SelectItem>
-                  {(lpus ?? []).map((l) => (
-                    <SelectItem key={l.id} value={l.id}>
-                      {l.name}
-                    </SelectItem>
-                  ))}
+                  {(lpus ?? [])
+                    .filter((l) => l.isActive)
+                    .map((l) => (
+                      <SelectItem key={l.id} value={l.id}>
+                        {l.name}
+                      </SelectItem>
+                    ))}
                 </SelectContent>
               </Select>
             </div>
@@ -382,15 +388,15 @@ export function RequestsView() {
                             </span>
                           </td>
                           <td>
-                            <span className="text-sm">{r.doctor.fullName}</span>
+                            <span className="text-sm">{r.doctor?.fullName ?? "—"}</span>
                             <span className="block text-[11px] text-muted-foreground">
-                              МП: {r.doctor.mp?.name ?? "—"}
+                              МП: {r.doctor?.mp?.name ?? "—"}
                             </span>
                           </td>
                           <td>
-                            <span className="text-sm">{r.lpu.name}</span>
+                            <span className="text-sm">{r.lpu?.name ?? "—"}</span>
                             <span className="block text-[11px] text-muted-foreground">
-                              {r.lpu.city.name}
+                              {r.lpu?.city.name ?? ""}
                             </span>
                           </td>
                           <td className="text-sm text-muted-foreground">
@@ -498,8 +504,8 @@ function initRequestForm(request: RequestItem | null): RequestFormState {
   return {
     date: request.date.slice(0, 10),
     patientName: request.patientName,
-    doctorId: request.doctorId,
-    lpuId: request.lpuId,
+    doctorId: request.doctorId ?? "",
+    lpuId: request.lpuId ?? "",
     destination: request.destination ?? "",
     assignedIds: request.assignedItems.map((i) => i.id),
     doneIds: request.doneItems.map((i) => i.id),
@@ -530,17 +536,48 @@ function RequestFormDialog({
     queryFn: () => api.get("/api/app/lpus"),
   });
 
+  // Варианты НВ: активные + текущий врач редактируемой заявки (если помечен на удаление)
+  const doctorOptions = useMemo<Array<Pick<DoctorItem, "id" | "fullName">>>(() => {
+    const list = (doctors ?? [])
+      .filter((d) => d.isActive)
+      .map((d) => ({ id: d.id, fullName: d.fullName }));
+    const cur = request?.doctor;
+    if (cur && !list.some((d) => d.id === cur.id)) {
+      list.unshift({ id: cur.id, fullName: cur.fullName });
+    }
+    return list;
+  }, [doctors, request]);
+
   const selectedDoctor = useMemo(
     () => doctors?.find((d) => d.id === form.doctorId) ?? null,
     [doctors, form.doctorId]
   );
 
   // ЛПУ, привязанные к выбранному НВ (данные lpus уже приходят в ответе doctors)
-  const doctorLpus = useMemo(() => selectedDoctor?.lpus.map((x) => x.lpu) ?? [], [selectedDoctor]);
+  const doctorLpus = useMemo(
+    () => (selectedDoctor?.lpus ?? []).map((x) => x.lpu).filter((l) => l.isActive !== false),
+    [selectedDoctor]
+  );
 
-  // Режим выбора ЛПУ: 1 привязка — авто; несколько — Select из привязок; 0 — свободный Select
-  const lpuMode: "none" | "single" | "multi" | "free" = !selectedDoctor
-    ? "none"
+  // Свободные варианты ЛПУ (без НВ / у НВ нет привязок): активные + текущее ЛПУ заявки
+  const freeLpuOptions = useMemo<CityData[]>(() => {
+    const list = (lpus ?? []).filter((l) => l.isActive);
+    if (request?.lpu) {
+      const cur: CityData = {
+        id: request.lpu.id,
+        name: request.lpu.name,
+        city: request.lpu.city,
+        address: request.lpu.address,
+        isActive: request.lpu.isActive ?? true,
+      };
+      if (!list.some((l) => l.id === cur.id)) list.unshift(cur);
+    }
+    return list;
+  }, [lpus, request]);
+
+  // Режим выбора ЛПУ: 1 привязка — авто; несколько — Select из привязок; 0/без НВ — свободный Select
+  const lpuMode: "single" | "multi" | "free" = !selectedDoctor
+    ? "free"
     : doctorLpus.length === 1
       ? "single"
       : doctorLpus.length > 1
@@ -550,7 +587,7 @@ function RequestFormDialog({
   // Варианты для режима «несколько ЛПУ» (+ защита для редактируемой заявки)
   const multiOptions = useMemo(() => {
     const opts = [...doctorLpus];
-    if (request && request.lpuId && !opts.some((l) => l.id === request.lpuId)) {
+    if (request?.lpu && request.lpuId && !opts.some((l) => l.id === request.lpu?.id)) {
       opts.push(request.lpu);
     }
     return opts;
@@ -563,7 +600,7 @@ function RequestFormDialog({
     if (!resolvedLpuId) return null;
     const fromDoctor = doctorLpus.find((l) => l.id === resolvedLpuId);
     if (fromDoctor) return fromDoctor.city.name;
-    if (request?.lpu.id === resolvedLpuId) return request.lpu.city.name;
+    if (request?.lpu && request.lpu.id === resolvedLpuId) return request.lpu.city.name;
     return lpus?.find((l) => l.id === resolvedLpuId)?.city.name ?? null;
   }, [resolvedLpuId, doctorLpus, lpus, request]);
 
@@ -572,8 +609,9 @@ function RequestFormDialog({
       const body = {
         date: form.date,
         patientName: form.patientName.trim(),
-        doctorId: form.doctorId,
-        lpuId: resolvedLpuId,
+        // НВ и ЛПУ необязательны (доработка): обязателен только пациент
+        doctorId: form.doctorId || null,
+        lpuId: resolvedLpuId || null,
         destination: form.destination.trim() || "МРТ ТОЧНО",
         assignedIds: form.assignedIds,
         doneIds: form.doneIds,
@@ -632,46 +670,41 @@ function RequestFormDialog({
             />
           </div>
 
-          {/* 3. ФИО НВ */}
+          {/* 3. ФИО НВ — необязательно: пациент может не помнить врача */}
           <div className="space-y-1.5">
-            <Label>
-              ФИО НВ <span className="text-azure-dark">*</span>
-            </Label>
+            <Label>ФИО НВ</Label>
             <Select
-              value={form.doctorId}
+              value={form.doctorId || NONE}
               onValueChange={(v) => {
                 const nd = doctors?.find((d) => d.id === v);
-                const dl = nd?.lpus.map((x) => x.lpu) ?? [];
+                const dl = (nd?.lpus ?? []).map((x) => x.lpu).filter((l) => l.isActive !== false);
                 setForm((f) => ({
                   ...f,
-                  doctorId: v,
-                  lpuId: dl.length === 1 ? dl[0].id : "",
+                  doctorId: v === NONE ? "" : v,
+                  lpuId: v === NONE ? "" : dl.length === 1 ? dl[0].id : "",
                 }));
               }}
             >
               <SelectTrigger className="bg-white">
-                <SelectValue placeholder="Выберите направляющего врача" />
+                <SelectValue placeholder="Не указан" />
               </SelectTrigger>
               <SelectContent className="max-h-72">
-                {(doctors ?? []).map((d) => (
+                <SelectItem value={NONE}>Не указан</SelectItem>
+                {doctorOptions.map((d) => (
                   <SelectItem key={d.id} value={d.id}>
                     {d.fullName}
                   </SelectItem>
                 ))}
               </SelectContent>
             </Select>
+            <p className="text-[11px] text-muted-foreground">
+              Если пациент не помнит врача — оставьте «Не указан», информацию можно указать в комментарии
+            </p>
           </div>
 
-          {/* 4. ЛПУ и город — автозаполнение из карточки НВ */}
+          {/* 4. ЛПУ и город — автозаполнение из карточки НВ (необязательно) */}
           <div className="space-y-1.5">
-            <Label>
-              ЛПУ <span className="text-azure-dark">*</span>
-            </Label>
-            {lpuMode === "none" && (
-              <p className="text-xs text-muted-foreground">
-                Сначала выберите НВ — ЛПУ подставится из его карточки
-              </p>
-            )}
+            <Label>ЛПУ</Label>
             {lpuMode === "single" && (
               <>
                 <Input
@@ -683,19 +716,20 @@ function RequestFormDialog({
                   className="bg-white text-muted-foreground"
                 />
                 <p className="text-[11px] text-muted-foreground">
-                  Единственное ЛПУ врача — подставлено автоматически
+                  Единственное активное ЛПУ врача — подставлено автоматически
                 </p>
               </>
             )}
             {lpuMode === "multi" && (
               <Select
-                value={form.lpuId}
-                onValueChange={(v) => setForm({ ...form, lpuId: v })}
+                value={form.lpuId || NONE}
+                onValueChange={(v) => setForm({ ...form, lpuId: v === NONE ? "" : v })}
               >
                 <SelectTrigger className="bg-white">
                   <SelectValue placeholder="Выберите ЛПУ из привязок НВ" />
                 </SelectTrigger>
                 <SelectContent className="max-h-72">
+                  <SelectItem value={NONE}>Не указано</SelectItem>
                   {multiOptions.map((l) => (
                     <SelectItem key={l.id} value={l.id}>
                       {l.name} · {l.city.name}
@@ -706,14 +740,15 @@ function RequestFormDialog({
             )}
             {lpuMode === "free" && (
               <Select
-                value={form.lpuId}
-                onValueChange={(v) => setForm({ ...form, lpuId: v })}
+                value={form.lpuId || NONE}
+                onValueChange={(v) => setForm({ ...form, lpuId: v === NONE ? "" : v })}
               >
                 <SelectTrigger className="bg-white">
-                  <SelectValue placeholder="У НВ нет привязок — выберите ЛПУ" />
+                  <SelectValue placeholder="Не указано (опционально)" />
                 </SelectTrigger>
                 <SelectContent className="max-h-72">
-                  {(lpus ?? []).map((l) => (
+                  <SelectItem value={NONE}>Не указано</SelectItem>
+                  {freeLpuOptions.map((l) => (
                     <SelectItem key={l.id} value={l.id}>
                       {l.name} · {l.city.name}
                     </SelectItem>
@@ -739,12 +774,10 @@ function RequestFormDialog({
             </p>
           </div>
 
-          {/* 6. Что назначено — мультивыбор из номенклатуры (обязательно) */}
+          {/* 6. Что назначено — мультивыбор из номенклатуры (необязательно) */}
           <div className="space-y-1.5">
             <div className="flex items-center justify-between">
-              <Label>
-                Что назначено <span className="text-azure-dark">*</span>
-              </Label>
+              <Label>Что назначено</Label>
               <span className="text-[11px] text-muted-foreground">
                 Выбрано: {form.assignedIds.length}
               </span>
@@ -834,14 +867,7 @@ function RequestFormDialog({
           </Button>
           <Button
             onClick={() => save.mutate()}
-            disabled={
-              !form.date ||
-              !form.patientName.trim() ||
-              !form.doctorId ||
-              !resolvedLpuId ||
-              !form.assignedIds.length ||
-              save.isPending
-            }
+            disabled={!form.date || !form.patientName.trim() || save.isPending}
             className="bg-azure hover:bg-azure-dark"
           >
             {save.isPending && <ClipboardList className="h-4 w-4 animate-spin" strokeWidth={2} />}

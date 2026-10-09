@@ -33,33 +33,50 @@ export async function POST(req: NextRequest) {
   return NextResponse.json(item, { status: 201 });
 }
 
-// DELETE /api/app/nomenclature?id=... — только МП
+// DELETE /api/app/nomenclature?id=... — только МП.
+// Позиция НЕ удаляется физически, а помечается на удаление (isActive=false):
+// исключается из выпадающих списков, история заявок сохраняется.
 export async function DELETE(req: NextRequest) {
   const { session, error } = await requireMP();
   if (error) return error;
   const id = req.nextUrl.searchParams.get("id");
   if (!id) return badRequest("Не указан id");
-  const usedA = await db.request.findFirst({ where: { assignedId: id } });
-  const usedD = await db.request.findFirst({ where: { doneId: id } });
-  if (usedA || usedD) {
-    const item = await db.nomenclature.update({ where: { id }, data: { isActive: false } });
-    await audit(session, "UPDATE", "nomenclature", id, `Деактивирована: ${item.name}`);
-    return NextResponse.json({ ok: true, deactivated: true });
-  }
-  const item = await db.nomenclature.delete({ where: { id } }).catch(() => null);
+  const item = await db.nomenclature
+    .update({ where: { id }, data: { isActive: false } })
+    .catch(() => null);
   if (!item) return notFound("Позиция не найдена");
-  await audit(session, "DELETE", "nomenclature", id, `Номенклатура: ${item.name}`);
-  return NextResponse.json({ ok: true });
+  await audit(session, "DELETE", "nomenclature", id, `Номенклатура: ${item.name} — помечена на удаление`);
+  return NextResponse.json({ ok: true, deactivated: true });
 }
 
-// PUT /api/app/nomenclature — редактирование позиции номенклатуры
+// PUT /api/app/nomenclature — редактирование позиции номенклатуры.
+// Поддерживается частичное обновление: { id, isActive } — для восстановления
+// из пометки на удаление без передачи остальных полей.
 export async function PUT(req: NextRequest) {
   const { session, error } = await requireAuth();
   if (error) return error;
   const body = await req.json().catch(() => null);
   const id = String(body?.id ?? "");
-  const name = String(body?.name ?? "").trim();
   if (!id) return badRequest("Не указан id");
+
+  // Частичный режим: только переключение пометки на удаление
+  if (body?.name === undefined) {
+    if (body?.isActive === undefined) return badRequest("Нет данных для обновления");
+    const item = await db.nomenclature
+      .update({ where: { id }, data: { isActive: Boolean(body.isActive) } })
+      .catch(() => null);
+    if (!item) return notFound("Позиция не найдена");
+    await audit(
+      session,
+      "UPDATE",
+      "nomenclature",
+      id,
+      body.isActive ? `Номенклатура: ${item.name} — возвращена в работу` : `Номенклатура: ${item.name} — помечена на удаление`
+    );
+    return NextResponse.json(item);
+  }
+
+  const name = String(body.name).trim();
   if (!name) return badRequest("Укажите наименование");
   const category = String(body?.category ?? "").trim() || "Обследования";
   const dup = await db.nomenclature.findFirst({ where: { name, category, NOT: { id } } });

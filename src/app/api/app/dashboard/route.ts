@@ -15,8 +15,12 @@ export async function GET(req: NextRequest) {
   const weekAhead = new Date(now.getTime() + 7 * 86400000);
   const weekAgo = new Date(now.getTime() - 7 * 86400000);
 
-  // Ограничение области «Только мои НВ»
-  const doctorScope = scope === "mine" ? { mpId: session.uid } : {};
+  // Ограничение области «Только мои НВ» + исключение помеченных на удаление (доработка)
+  const doctorScope = {
+    isActive: true,
+    ...(scope === "mine" ? { mpId: session.uid } : {}),
+  };
+  const lpuScope = { isActive: true };
   const requestScope = scope === "mine" ? { doctor: { mpId: session.uid } } : {};
 
   const startOfToday = new Date(now);
@@ -28,8 +32,11 @@ export async function GET(req: NextRequest) {
       db.lpu.count({
         where:
           scope === "mine"
-            ? { doctors: { some: { doctor: { mpId: session.uid } } } }
-            : {},
+            ? {
+                ...lpuScope,
+                doctors: { some: { doctor: { mpId: session.uid } } },
+              }
+            : lpuScope,
       }),
       db.request.count({ where: { date: { gte: monthAgo }, ...requestScope } }),
       db.request.count({
@@ -90,18 +97,21 @@ export async function GET(req: NextRequest) {
     take: 10,
   });
   const topDoctors = await Promise.all(
-    topDoctorsRaw.map(async (row) => {
-      const doc = await db.doctor.findUnique({
-        where: { id: row.doctorId },
-        select: { id: true, fullName: true, mp: { select: { name: true } } },
-      });
-      return {
-        id: row.doctorId,
-        name: doc?.fullName ?? "—",
-        mp: doc?.mp?.name ?? "",
-        count: row._count.id,
-      };
-    })
+    topDoctorsRaw
+      // Заявки без НВ (доработка) не участвуют в «Рейтинге врачей»
+      .filter((row): row is (typeof row) & { doctorId: string } => Boolean(row.doctorId))
+      .map(async (row) => {
+        const doc = await db.doctor.findUnique({
+          where: { id: row.doctorId },
+          select: { id: true, fullName: true, mp: { select: { name: true } } },
+        });
+        return {
+          id: row.doctorId,
+          name: doc?.fullName ?? "—",
+          mp: doc?.mp?.name ?? "",
+          count: row._count.id,
+        };
+      })
   );
 
   return NextResponse.json({

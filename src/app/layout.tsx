@@ -24,7 +24,7 @@ export const metadata: Metadata = {
   title: "МРТ ТОЧНО · CRM направляющих врачей",
   description:
     "Корпоративное веб-приложение для учета статистики и CRM-сопровождения направляющих врачей (внутренний контур).",
-  icons: { icon: "/favicon.svg" },
+  icons: { icon: "/favicon.png" },
 };
 
 export const viewport: Viewport = {

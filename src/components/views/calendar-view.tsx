@@ -160,7 +160,11 @@ export function CalendarView() {
     queryFn: () => api.get("/api/app/doctors"),
   });
   const doctorOptions = useMemo(
-    () => (doctors ?? []).filter((d) => mpFilter === "ALL" || d.mpId === mpFilter),
+    // Помеченные на удаление НВ исключаются из фильтра (доработка)
+    () =>
+      (doctors ?? [])
+        .filter((d) => d.isActive)
+        .filter((d) => mpFilter === "ALL" || d.mpId === mpFilter),
     [doctors, mpFilter]
   );
 

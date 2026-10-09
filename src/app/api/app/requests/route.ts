@@ -56,19 +56,27 @@ export async function GET(req: NextRequest) {
 }
 
 // POST /api/app/requests — регистрация направления
+// Обязательное поле — только ФИО пациента (доработка): пациент может не помнить
+// врача/ЛПУ — заявка регистрируется с комментарием, данные уточняются позднее
 export async function POST(req: NextRequest) {
   const { session, error } = await requireAuth();
   if (error) return error;
   const body = await req.json().catch(() => null);
   const date = parseDate(body?.date) ?? new Date();
   const patientName = String(body?.patientName ?? "").trim();
-  const doctorId = String(body?.doctorId ?? "");
-  const lpuId = String(body?.lpuId ?? "");
+  const doctorId = body?.doctorId ? String(body.doctorId) : "";
+  const lpuId = body?.lpuId ? String(body.lpuId) : "";
   if (!patientName) return badRequest("Укажите ФИО пациента");
-  if (!doctorId) return badRequest("Выберите ФИО НВ");
-  if (!lpuId) return badRequest("Укажите ЛПУ");
-  const doctor = await db.doctor.findUnique({ where: { id: doctorId } });
-  if (!doctor) return badRequest("Врач (НВ) не найден");
+  let doctorName: string | null = null;
+  if (doctorId) {
+    const doctor = await db.doctor.findUnique({ where: { id: doctorId } });
+    if (!doctor) return badRequest("Врач (НВ) не найден");
+    doctorName = doctor.fullName;
+  }
+  if (lpuId) {
+    const lpu = await db.lpu.findUnique({ where: { id: lpuId } });
+    if (!lpu) return badRequest("ЛПУ не найдено");
+  }
   // «Куда направление»: незаполненное поле автоматически заменяется на «МРТ ТОЧНО»
   const destination =
     body?.destination && String(body.destination).trim()
@@ -80,8 +88,8 @@ export async function POST(req: NextRequest) {
     data: {
       date,
       patientName,
-      doctorId,
-      lpuId,
+      doctorId: doctorId || null,
+      lpuId: lpuId || null,
       destination,
       assignedId: assignedIds[0] ?? null,
       doneId: doneIds[0] ?? null,
@@ -100,7 +108,7 @@ export async function POST(req: NextRequest) {
     "CREATE",
     "request",
     request.id,
-    `Заявка: ${patientName}, НВ: ${doctor.fullName}`
+    `Заявка: ${patientName}${doctorName ? `, НВ: ${doctorName}` : ", НВ не указан"}`
   );
   return NextResponse.json(request, { status: 201 });
 }

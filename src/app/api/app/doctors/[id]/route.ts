@@ -60,6 +60,8 @@ export async function PUT(req: NextRequest, { params }: Params) {
   }
   if (body?.cityId !== undefined) data.cityId = body.cityId || null;
   if (body?.comment !== undefined) data.comment = body.comment ? String(body.comment) : null;
+  // Пометка на удаление / восстановление (доработка)
+  if (body?.isActive !== undefined) data.isActive = Boolean(body.isActive);
   // График работы НВ (доработка 1.2)
   if (body?.workSchedule !== undefined) {
     data.workSchedule = body.workSchedule ? String(body.workSchedule) : null;
@@ -104,13 +106,17 @@ export async function PUT(req: NextRequest, { params }: Params) {
   return NextResponse.json(doctor);
 }
 
-// DELETE /api/app/doctors/[id] — только МП
+// DELETE /api/app/doctors/[id] — только МП.
+// Врач НЕ удаляется физически, а помечается на удаление (isActive=false):
+// исключается из выпадающих списков, история заявок и визитов сохраняется.
 export async function DELETE(_req: NextRequest, { params }: Params) {
   const { session, error } = await requireMP();
   if (error) return error;
   const { id } = await params;
-  const doctor = await db.doctor.delete({ where: { id } }).catch(() => null);
+  const doctor = await db.doctor
+    .update({ where: { id }, data: { isActive: false } })
+    .catch(() => null);
   if (!doctor) return notFound("Врач не найден");
-  await audit(session, "DELETE", "doctor", id, `НВ: ${doctor.fullName}`);
+  await audit(session, "DELETE", "doctor", id, `НВ: ${doctor.fullName} — помечен на удаление`);
   return NextResponse.json({ ok: true });
 }
