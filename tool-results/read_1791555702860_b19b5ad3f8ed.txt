@@ -1,0 +1,881 @@
+     1→     1→"use client";
+     2→     2→
+     3→     3→import { useMemo, useState } from "react";
+     4→     4→import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+     5→     5→import { useSession } from "next-auth/react";
+     6→     6→import { toast } from "sonner";
+     7→     7→import { format } from "date-fns";
+     8→     8→import { api, qs } from "@/lib/api-client";
+     9→     9→import type {
+    10→    10→  CityData,
+    11→    11→  DoctorItem,
+    12→    12→  NomenclatureItem,
+    13→    13→  RequestItem,
+    14→    14→  Role,
+    15→    15→  UserBasic,
+    16→    16→} from "@/lib/types";
+    17→    17→import {
+    18→    18→  SectionCard,
+    19→    19→  EmptyState,
+    20→    20→  DeleteButton,
+    21→    21→  RowsSkeleton,
+    22→    22→  fmtDate,
+    23→    23→  SortableTh,
+    24→    24→  cycleSort,
+    25→    25→  applySort,
+    26→    26→  type SortState,
+    27→    27→} from "@/components/shared/ui-bits";
+    28→    28→import { Button } from "@/components/ui/button";
+    29→    29→import { Input } from "@/components/ui/input";
+    30→    30→import { Label } from "@/components/ui/label";
+    31→    31→import { Textarea } from "@/components/ui/textarea";
+    32→    32→import { Checkbox } from "@/components/ui/checkbox";
+    33→    33→import {
+    34→    34→  Dialog,
+    35→    35→  DialogContent,
+    36→    36→  DialogDescription,
+    37→    37→  DialogFooter,
+    38→    38→  DialogHeader,
+    39→    39→  DialogTitle,
+    40→    40→} from "@/components/ui/dialog";
+    41→    41→import {
+    42→    42→  Select,
+    43→    43→  SelectContent,
+    44→    44→  SelectItem,
+    45→    45→  SelectTrigger,
+    46→    46→  SelectValue,
+    47→    47→} from "@/components/ui/select";
+    48→    48→import { ClipboardList, MessageSquare, Pencil, Plus, RotateCcw } from "lucide-react";
+    49→    49→import { useUiStore } from "@/store/ui";
+    50→    50→
+    51→    51→const ALL = "__all__";
+    52→    52→/** Сентинел «не указан» для Radix Select (пустое value запрещено) */
+    53→    53→const NONE = "__none__";
+    54→    54→
+    55→    55→/** Пользователь сессии: JWT-колбэк кладет uid и role (типизация next-auth по умолчанию их не знает) */
+    56→    56→type SessionUserWithRole = { uid?: string; role?: Role } | undefined;
+    57→    57→
+    58→    58→/** Сегодняшняя дата в формате YYYY-MM-DD (локальная зона) */
+    59→    59→function todayISO(): string {
+    60→    60→  const d = new Date();
+    61→    61→  return new Date(d.getTime() - d.getTimezoneOffset() * 60000).toISOString().slice(0, 10);
+    62→    62→}
+    63→    63→
+    64→    64→/** ISO-дата (из drill-down дашборда) → yyyy-MM-dd для input[type=date] */
+    65→    65→function isoToYMD(iso: string | undefined): string {
+    66→    66→  if (!iso) return "";
+    67→    67→  const d = new Date(iso);
+    68→    68→  return Number.isNaN(d.getTime()) ? "" : format(d, "yyyy-MM-dd");
+    69→    69→}
+    70→    70→
+    71→    71→interface RequestFilters {
+    72→    72→  from: string;
+    73→    73→  to: string;
+    74→    74→  doctorId: string;
+    75→    75→  lpuId: string;
+    76→    76→  mpId: string;
+    77→    77→  /** Заполняется только drill-down-переходом с дашборда (отдельного контрола в разделе нет) */
+    78→    78→  assignedId: string;
+    79→    79→}
+    80→    80→
+    81→    81→const emptyFilters: RequestFilters = {
+    82→    82→  from: "",
+    83→    83→  to: "",
+    84→    84→  doctorId: "",
+    85→    85→  lpuId: "",
+    86→    86→  mpId: "",
+    87→    87→  assignedId: "",
+    88→    88→};
+    89→    89→
+    90→    90→/* ============================================================
+    91→    91→   Вьюха «Заявки» — учет направлений (список в стиле 1С)
+    92→    92→   ============================================================ */
+    93→    93→export function RequestsView() {
+    94→    94→  const qc = useQueryClient();
+    95→    95→  const { data: session } = useSession();
+    96→    96→  const isMP = (session?.user as SessionUserWithRole)?.role === "MP";
+    97→    97→
+    98→    98→  // Drill-down из дашборда: одноразовое поглощение фильтров в инициализаторе
+    99→    99→  // состояния (без useEffect — правило react-hooks/set-state-in-effect)
+   100→   100→  const [navFilters] = useState(() => useUiStore.getState().consumeRequestsFilters());
+   101→   101→  const [filters, setFilters] = useState<RequestFilters>(() => ({
+   102→   102→    ...emptyFilters,
+   103→   103→    ...(navFilters
+   104→   104→      ? {
+   105→   105→          from: isoToYMD(navFilters.from),
+   106→   106→          to: isoToYMD(navFilters.to),
+   107→   107→          mpId: navFilters.mpId ?? "",
+   108→   108→          lpuId: navFilters.lpuId ?? "",
+   109→   109→          doctorId: navFilters.doctorId ?? "",
+   110→   110→          assignedId: navFilters.assignedId ?? "",
+   111→   111→        }
+   112→   112→      : {}),
+   113→   113→  }));
+   114→   114→  const [formOpen, setFormOpen] = useState(false);
+   115→   115→  const [editing, setEditing] = useState<RequestItem | null>(null);
+   116→   116→
+   117→   117→  // Сортировка столбцов таблицы (клик по заголовку: возр. → убыв. → сброс)
+   118→   118→  const [sort, setSort] = useState<SortState | null>(null);
+   119→   119→  const handleSort = (field: string) => setSort(cycleSort(sort, field));
+   120→   120→
+   121→   121→  /** Открыть карточку заявки (= диалог редактирования) */
+   122→   122→  function openCard(r: RequestItem) {
+   123→   123→    setEditing(r);
+   124→   124→    setFormOpen(true);
+   125→   125→  }
+   126→   126→
+   127→   127→  const { data: requests, isLoading } = useQuery<RequestItem[]>({
+   128→   128→    queryKey: [
+   129→   129→      "requests",
+   130→   130→      "list",
+   131→   131→      filters.from,
+   132→   132→      filters.to,
+   133→   133→      filters.doctorId,
+   134→   134→      filters.lpuId,
+   135→   135→      filters.mpId,
+   136→   136→      filters.assignedId,
+   137→   137→    ],
+   138→   138→    queryFn: () =>
+   139→   139→      api.get(
+   140→   140→        `/api/app/requests${qs({
+   141→   141→          from: filters.from,
+   142→   142→          to: filters.to,
+   143→   143→          doctorId: filters.doctorId,
+   144→   144→          lpuId: filters.lpuId,
+   145→   145→          mpId: filters.mpId,
+   146→   146→          assignedId: filters.assignedId,
+   147→   147→        })}`
+   148→   148→      ),
+   149→   149→  });
+   150→   150→  const { data: doctors } = useQuery<DoctorItem[]>({
+   151→   151→    queryKey: ["doctors", "all"],
+   152→   152→    queryFn: () => api.get("/api/app/doctors"),
+   153→   153→  });
+   154→   154→  const { data: lpus } = useQuery<CityData[]>({
+   155→   155→    queryKey: ["lpus"],
+   156→   156→    queryFn: () => api.get("/api/app/lpus"),
+   157→   157→  });
+   158→   158→  const { data: users } = useQuery<UserBasic[]>({
+   159→   159→    queryKey: ["users-basic"],
+   160→   160→    queryFn: () => api.get("/api/app/users?basic=1"),
+   161→   161→  });
+   162→   162→
+   163→   163→  const mps = useMemo(() => (users ?? []).filter((u) => u.role === "MP"), [users]);
+   164→   164→
+   165→   165→  // Отсортированные строки таблицы (клиентская сортировка; пустые значения — в конец)
+   166→   166→  const rows = useMemo(
+   167→   167→    () =>
+   168→   168→      applySort(requests ?? [], sort, (r, f) => {
+   169→   169→        switch (f) {
+   170→   170→          case "date":
+   171→   171→            return r.date;
+   172→   172→          case "patient":
+   173→   173→            return r.patientName;
+   174→   174→          case "doctor":
+   175→   175→            return r.doctor?.fullName ?? "";
+   176→   176→          case "lpu":
+   177→   177→            return r.lpu?.name ?? "";
+   178→   178→          case "destination":
+   179→   179→            return r.destination ?? "";
+   180→   180→          case "assigned":
+   181→   181→            return r.assignedItems.map((i) => i.name).join(", ");
+   182→   182→          case "done":
+   183→   183→            return r.doneItems.map((i) => i.name).join(", ");
+   184→   184→          case "author":
+   185→   185→            return r.author?.name ?? "";
+   186→   186→          default:
+   187→   187→            return null;
+   188→   188→        }
+   189→   189→      }),
+   190→   190→    [requests, sort]
+   191→   191→  );
+   192→   192→
+   193→   193→  // Удаление заявки — только МП
+   194→   194→  const remove = useMutation({
+   195→   195→    mutationFn: (id: string) => api.del(`/api/app/requests/${id}`),
+   196→   196→    onSuccess: () => {
+   197→   197→      toast.success("Заявка удалена");
+   198→   198→      qc.invalidateQueries({ queryKey: ["requests"] });
+   199→   199→      qc.invalidateQueries({ queryKey: ["doctor-card"] });
+   200→   200→      qc.invalidateQueries({ queryKey: ["dashboard"] });
+   201→   201→    },
+   202→   202→    onError: (e: Error) => toast.error(e.message),
+   203→   203→  });
+   204→   204→
+   205→   205→  return (
+   206→   206→    <div className="space-y-4">
+   207→   207→      <SectionCard
+   208→   208→        title="Заявки"
+   209→   209→        description="Учет направлений: что назначено НВ и что сделано, по врачам и ЛПУ"
+   210→   210→        action={
+   211→   211→          <Button
+   212→   212→            onClick={() => {
+   213→   213→              setEditing(null);
+   214→   214→              setFormOpen(true);
+   215→   215→            }}
+   216→   216→            className="gap-1.5 bg-azure hover:bg-azure-dark"
+   217→   217→          >
+   218→   218→            <Plus className="h-4 w-4" strokeWidth={2} /> Зарегистрировать заявку
+   219→   219→          </Button>
+   220→   220→        }
+   221→   221→      >
+   222→   222→        <div className="space-y-4">
+   223→   223→          {/* Панель фильтров */}
+   224→   224→          <div className="flex flex-wrap items-end gap-3">
+   225→   225→            <div className="space-y-1.5">
+   226→   226→              <Label className="text-xs text-muted-foreground">Период с</Label>
+   227→   227→              <Input
+   228→   228→                type="date"
+   229→   229→                value={filters.from}
+   230→   230→                onChange={(e) => setFilters((f) => ({ ...f, from: e.target.value }))}
+   231→   231→                className="w-40 bg-white"
+   232→   232→              />
+   233→   233→            </div>
+   234→   234→            <div className="space-y-1.5">
+   235→   235→              <Label className="text-xs text-muted-foreground">по</Label>
+   236→   236→              <Input
+   237→   237→                type="date"
+   238→   238→                value={filters.to}
+   239→   239→                onChange={(e) => setFilters((f) => ({ ...f, to: e.target.value }))}
+   240→   240→                className="w-40 bg-white"
+   241→   241→              />
+   242→   242→            </div>
+   243→   243→            <div className="space-y-1.5">
+   244→   244→              <Label className="text-xs text-muted-foreground">НВ</Label>
+   245→   245→              <Select
+   246→   246→                value={filters.doctorId || ALL}
+   247→   247→                onValueChange={(v) => setFilters((f) => ({ ...f, doctorId: v === ALL ? "" : v }))}
+   248→   248→              >
+   249→   249→                <SelectTrigger className="w-48 bg-white">
+   250→   250→                  <SelectValue placeholder="Все НВ" />
+   251→   251→                </SelectTrigger>
+   252→   252→                <SelectContent className="max-h-72">
+   253→   253→                  <SelectItem value={ALL}>Все НВ</SelectItem>
+   254→   254→                  {(doctors ?? [])
+   255→   255→                    .filter((d) => d.isActive)
+   256→   256→                    .map((d) => (
+   257→   257→                      <SelectItem key={d.id} value={d.id}>
+   258→   258→                        {d.fullName}
+   259→   259→                      </SelectItem>
+   260→   260→                    ))}
+   261→   261→                </SelectContent>
+   262→   262→              </Select>
+   263→   263→            </div>
+   264→   264→            <div className="space-y-1.5">
+   265→   265→              <Label className="text-xs text-muted-foreground">ЛПУ</Label>
+   266→   266→              <Select
+   267→   267→                value={filters.lpuId || ALL}
+   268→   268→                onValueChange={(v) => setFilters((f) => ({ ...f, lpuId: v === ALL ? "" : v }))}
+   269→   269→              >
+   270→   270→                <SelectTrigger className="w-48 bg-white">
+   271→   271→                  <SelectValue placeholder="Все ЛПУ" />
+   272→   272→                </SelectTrigger>
+   273→   273→                <SelectContent className="max-h-72">
+   274→   274→                  <SelectItem value={ALL}>Все ЛПУ</SelectItem>
+   275→   275→                  {(lpus ?? [])
+   276→   276→                    .filter((l) => l.isActive)
+   277→   277→                    .map((l) => (
+   278→   278→                      <SelectItem key={l.id} value={l.id}>
+   279→   279→                        {l.name}
+   280→   280→                      </SelectItem>
+   281→   281→                    ))}
+   282→   282→                </SelectContent>
+   283→   283→              </Select>
+   284→   284→            </div>
+   285→   285→            <div className="space-y-1.5">
+   286→   286→              <Label className="text-xs text-muted-foreground">МП</Label>
+   287→   287→              <Select
+   288→   288→                value={filters.mpId || ALL}
+   289→   289→                onValueChange={(v) => setFilters((f) => ({ ...f, mpId: v === ALL ? "" : v }))}
+   290→   290→              >
+   291→   291→                <SelectTrigger className="w-44 bg-white">
+   292→   292→                  <SelectValue placeholder="Все МП" />
+   293→   293→                </SelectTrigger>
+   294→   294→                <SelectContent>
+   295→   295→                  <SelectItem value={ALL}>Все МП</SelectItem>
+   296→   296→                  {mps.map((m) => (
+   297→   297→                    <SelectItem key={m.id} value={m.id}>
+   298→   298→                      {m.name}
+   299→   299→                    </SelectItem>
+   300→   300→                  ))}
+   301→   301→                </SelectContent>
+   302→   302→              </Select>
+   303→   303→            </div>
+   304→   304→            <Button
+   305→   305→              variant="ghost"
+   306→   306→              size="sm"
+   307→   307→              className="gap-1.5 text-sky hover:text-brand"
+   308→   308→              onClick={() => setFilters(emptyFilters)}
+   309→   309→            >
+   310→   310→              <RotateCcw className="h-3.5 w-3.5" strokeWidth={2} /> Сбросить
+   311→   311→            </Button>
+   312→   312→          </div>
+   313→   313→
+   314→   314→          {/* Таблица заявок — в стиле 1С; клик по строке открывает карточку заявки */}
+   315→   315→          {isLoading ? (
+   316→   316→            <RowsSkeleton rows={6} />
+   317→   317→          ) : !requests?.length ? (
+   318→   318→            <EmptyState
+   319→   319→              title="Заявок не найдено"
+   320→   320→              hint="Измените фильтры или зарегистрируйте первое направление пациента"
+   321→   321→            />
+   322→   322→          ) : (
+   323→   323→            <>
+   324→   324→              <p className="text-xs text-muted-foreground">
+   325→   325→                Найдено заявок: {requests.length}
+   326→   326→                {requests.length >= 5000 && " (показаны первые 5000)"}
+   327→   327→              </p>
+   328→   328→              <div className="onec-window">
+   329→   329→                <div className="max-h-96 overflow-y-auto">
+   330→   330→                  <table className="onec-table">
+   331→   331→                    <thead>
+   332→   332→                      <tr>
+   333→   333→                        <SortableTh
+   334→   334→                          label="Дата"
+   335→   335→                          field="date"
+   336→   336→                          sort={sort}
+   337→   337→                          onSort={handleSort}
+   338→   338→                          className="w-24"
+   339→   339→                        />
+   340→   340→                        <SortableTh label="Пациент" field="patient" sort={sort} onSort={handleSort} />
+   341→   341→                        <SortableTh label="НВ" field="doctor" sort={sort} onSort={handleSort} />
+   342→   342→                        <SortableTh label="ЛПУ" field="lpu" sort={sort} onSort={handleSort} />
+   343→   343→                        <SortableTh
+   344→   344→                          label="Куда направление"
+   345→   345→                          field="destination"
+   346→   346→                          sort={sort}
+   347→   347→                          onSort={handleSort}
+   348→   348→                        />
+   349→   349→                        <SortableTh
+   350→   350→                          label="Что назначено"
+   351→   351→                          field="assigned"
+   352→   352→                          sort={sort}
+   353→   353→                          onSort={handleSort}
+   354→   354→                        />
+   355→   355→                        <SortableTh
+   356→   356→                          label="Что сделано"
+   357→   357→                          field="done"
+   358→   358→                          sort={sort}
+   359→   359→                          onSort={handleSort}
+   360→   360→                        />
+   361→   361→                        <SortableTh label="Автор" field="author" sort={sort} onSort={handleSort} />
+   362→   362→                        <th className="w-20" />
+   363→   363→                      </tr>
+   364→   364→                    </thead>
+   365→   365→                    <tbody>
+   366→   366→                      {rows.map((r) => (
+   367→   367→                        <tr
+   368→   368→                          key={r.id}
+   369→   369→                          className="cursor-pointer"
+   370→   370→                          onClick={() => openCard(r)}
+   371→   371→                          title="Открыть карточку заявки"
+   372→   372→                        >
+   373→   373→                          <td className="whitespace-nowrap text-muted-foreground">
+   374→   374→                            {fmtDate(r.date)}
+   375→   375→                          </td>
+   376→   376→                          <td className="font-medium text-brand">
+   377→   377→                            <span className="inline-flex items-center gap-1.5">
+   378→   378→                              {r.patientName}
+   379→   379→                              {r.comment && (
+   380→   380→                                <span
+   381→   381→                                  title={r.comment}
+   382→   382→                                  className="inline-flex text-sky"
+   383→   383→                                  aria-label="Заявка с комментарием"
+   384→   384→                                >
+   385→   385→                                  <MessageSquare className="h-3.5 w-3.5" strokeWidth={2} />
+   386→   386→                                </span>
+   387→   387→                              )}
+   388→   388→                            </span>
+   389→   389→                          </td>
+   390→   390→                          <td>
+   391→   391→                            <span className="text-sm">{r.doctor?.fullName ?? "—"}</span>
+   392→   392→                            <span className="block text-[11px] text-muted-foreground">
+   393→   393→                              МП: {r.doctor?.mp?.name ?? "—"}
+   394→   394→                            </span>
+   395→   395→                          </td>
+   396→   396→                          <td>
+   397→   397→                            <span className="text-sm">{r.lpu?.name ?? "—"}</span>
+   398→   398→                            <span className="block text-[11px] text-muted-foreground">
+   399→   399→                              {r.lpu?.city.name ?? ""}
+   400→   400→                            </span>
+   401→   401→                          </td>
+   402→   402→                          <td className="text-sm text-muted-foreground">
+   403→   403→                            {r.destination ?? "—"}
+   404→   404→                          </td>
+   405→   405→                          <td className="text-sm">
+   406→   406→                            {r.assignedItems.map((i) => i.name).join(", ") || "—"}
+   407→   407→                          </td>
+   408→   408→                          <td className="text-sm">
+   409→   409→                            {r.doneItems.map((i) => i.name).join(", ") || "—"}
+   410→   410→                          </td>
+   411→   411→                          <td className="text-sm text-muted-foreground">
+   412→   412→                            {r.author?.name ?? "—"}
+   413→   413→                          </td>
+   414→   414→                          <td>
+   415→   415→                            <div className="flex items-center gap-1">
+   416→   416→                              <Button
+   417→   417→                                variant="ghost"
+   418→   418→                                size="icon"
+   419→   419→                                className="h-8 w-8 text-sky hover:text-brand"
+   420→   420→                                onClick={(e) => {
+   421→   421→                                  e.stopPropagation();
+   422→   422→                                  openCard(r);
+   423→   423→                                }}
+   424→   424→                                aria-label="Редактировать заявку"
+   425→   425→                                title="Редактировать"
+   426→   426→                              >
+   427→   427→                                <Pencil className="h-4 w-4" strokeWidth={2} />
+   428→   428→                              </Button>
+   429→   429→                              {isMP && (
+   430→   430→                                <span
+   431→   431→                                  className="inline-flex"
+   432→   432→                                  onClick={(e) => e.stopPropagation()}
+   433→   433→                                >
+   434→   434→                                  <DeleteButton
+   435→   435→                                    title={`Удалить заявку по пациенту «${r.patientName}»?`}
+   436→   436→                                    onConfirm={async () => {
+   437→   437→                                      try {
+   438→   438→                                        await remove.mutateAsync(r.id);
+   439→   439→                                      } catch (e) {
+   440→   440→                                        toast.error((e as Error).message);
+   441→   441→                                      }
+   442→   442→                                    }}
+   443→   443→                                  />
+   444→   444→                                </span>
+   445→   445→                              )}
+   446→   446→                            </div>
+   447→   447→                          </td>
+   448→   448→                        </tr>
+   449→   449→                      ))}
+   450→   450→                    </tbody>
+   451→   451→                  </table>
+   452→   452→                </div>
+   453→   453→              </div>
+   454→   454→            </>
+   455→   455→          )}
+   456→   456→        </div>
+   457→   457→      </SectionCard>
+   458→   458→
+   459→   459→      {/* Диалог создания / редактирования заявки (монтируется при открытии — форма инициализируется заново) */}
+   460→   460→      {formOpen && <RequestFormDialog request={editing} onOpenChange={setFormOpen} />}
+   461→   461→    </div>
+   462→   462→  );
+   463→   463→}
+   464→   464→export default RequestsView;
+   465→   465→
+   466→   466→/* ============================================================
+   467→   467→   Диалог регистрации / редактирования заявки (строго по ТЗ)
+   468→   468→   ============================================================ */
+   469→   469→interface RequestFormState {
+   470→   470→  date: string;
+   471→   471→  patientName: string;
+   472→   472→  doctorId: string;
+   473→   473→  lpuId: string;
+   474→   474→  destination: string;
+   475→   475→  /** Мультивыбор из номенклатуры: «Что назначено» — обязателен, «Что сделано» — нет */
+   476→   476→  assignedIds: string[];
+   477→   477→  doneIds: string[];
+   478→   478→  comment: string;
+   479→   479→}
+   480→   480→
+   481→   481→/** Переключение позиции в списке множественного выбора */
+   482→   482→function toggleInList(list: string[], id: string, checked: boolean): string[] {
+   483→   483→  return checked
+   484→   484→    ? list.includes(id)
+   485→   485→      ? list
+   486→   486→      : [...list, id]
+   487→   487→    : list.filter((x) => x !== id);
+   488→   488→}
+   489→   489→
+   490→   490→/** Начальное состояние формы: из заявки при редактировании / пустая (дата — сегодня) при создании */
+   491→   491→function initRequestForm(request: RequestItem | null): RequestFormState {
+   492→   492→  if (!request) {
+   493→   493→    return {
+   494→   494→      date: todayISO(),
+   495→   495→      patientName: "",
+   496→   496→      doctorId: "",
+   497→   497→      lpuId: "",
+   498→   498→      destination: "",
+   499→   499→      assignedIds: [],
+   500→   500→      doneIds: [],
+   501→   501→      comment: "",
+   502→   502→    };
+   503→   503→  }
+   504→   504→  return {
+   505→   505→    date: request.date.slice(0, 10),
+   506→   506→    patientName: request.patientName,
+   507→   507→    doctorId: request.doctorId ?? "",
+   508→   508→    lpuId: request.lpuId ?? "",
+   509→   509→    destination: request.destination ?? "",
+   510→   510→    assignedIds: request.assignedItems.map((i) => i.id),
+   511→   511→    doneIds: request.doneItems.map((i) => i.id),
+   512→   512→    comment: request.comment ?? "",
+   513→   513→  };
+   514→   514→}
+   515→   515→
+   516→   516→function RequestFormDialog({
+   517→   517→  request,
+   518→   518→  onOpenChange,
+   519→   519→}: {
+   520→   520→  request: RequestItem | null;
+   521→   521→  onOpenChange: (o: boolean) => void;
+   522→   522→}) {
+   523→   523→  const qc = useQueryClient();
+   524→   524→  const [form, setForm] = useState<RequestFormState>(() => initRequestForm(request));
+   525→   525→
+   526→   526→  const { data: doctors } = useQuery<DoctorItem[]>({
+   527→   527→    queryKey: ["doctors", "all"],
+   528→   528→    queryFn: () => api.get("/api/app/doctors"),
+   529→   529→  });
+   530→   530→  const { data: nomenclature } = useQuery<NomenclatureItem[]>({
+   531→   531→    queryKey: ["nomenclature", "active"],
+   532→   532→    queryFn: () => api.get("/api/app/nomenclature?active=1"),
+   533→   533→  });
+   534→   534→  const { data: lpus } = useQuery<CityData[]>({
+   535→   535→    queryKey: ["lpus"],
+   536→   536→    queryFn: () => api.get("/api/app/lpus"),
+   537→   537→  });
+   538→   538→
+   539→   539→  // Варианты НВ: активные + текущий врач редактируемой заявки (если помечен на удаление)
+   540→   540→  const doctorOptions = useMemo<Array<Pick<DoctorItem, "id" | "fullName">>>(() => {
+   541→   541→    const list = (doctors ?? [])
+   542→   542→      .filter((d) => d.isActive)
+   543→   543→      .map((d) => ({ id: d.id, fullName: d.fullName }));
+   544→   544→    const cur = request?.doctor;
+   545→   545→    if (cur && !list.some((d) => d.id === cur.id)) {
+   546→   546→      list.unshift({ id: cur.id, fullName: cur.fullName });
+   547→   547→    }
+   548→   548→    return list;
+   549→   549→  }, [doctors, request]);
+   550→   550→
+   551→   551→  const selectedDoctor = useMemo(
+   552→   552→    () => doctors?.find((d) => d.id === form.doctorId) ?? null,
+   553→   553→    [doctors, form.doctorId]
+   554→   554→  );
+   555→   555→
+   556→   556→  // ЛПУ, привязанные к выбранному НВ (данные lpus уже приходят в ответе doctors)
+   557→   557→  const doctorLpus = useMemo(
+   558→   558→    () => (selectedDoctor?.lpus ?? []).map((x) => x.lpu).filter((l) => l.isActive !== false),
+   559→   559→    [selectedDoctor]
+   560→   560→  );
+   561→   561→
+   562→   562→  // Свободные варианты ЛПУ (без НВ / у НВ нет привязок): активные + текущее ЛПУ заявки
+   563→   563→  const freeLpuOptions = useMemo<CityData[]>(() => {
+   564→   564→    const list = (lpus ?? []).filter((l) => l.isActive);
+   565→   565→    if (request?.lpu) {
+   566→   566→      const cur: CityData = {
+   567→   567→        id: request.lpu.id,
+   568→   568→        name: request.lpu.name,
+   569→   569→        city: request.lpu.city,
+   570→   570→        address: request.lpu.address,
+   571→   571→        isActive: request.lpu.isActive ?? true,
+   572→   572→      };
+   573→   573→      if (!list.some((l) => l.id === cur.id)) list.unshift(cur);
+   574→   574→    }
+   575→   575→    return list;
+   576→   576→  }, [lpus, request]);
+   577→   577→
+   578→   578→  // Режим выбора ЛПУ: 1 привязка — авто; несколько — Select из привязок; 0/без НВ — свободный Select
+   579→   579→  const lpuMode: "single" | "multi" | "free" = !selectedDoctor
+   580→   580→    ? "free"
+   581→   581→    : doctorLpus.length === 1
+   582→   582→      ? "single"
+   583→   583→      : doctorLpus.length > 1
+   584→   584→        ? "multi"
+   585→   585→        : "free";
+   586→   586→
+   587→   587→  // Варианты для режима «несколько ЛПУ» (+ защита для редактируемой заявки)
+   588→   588→  const multiOptions = useMemo(() => {
+   589→   589→    const opts = [...doctorLpus];
+   590→   590→    if (request?.lpu && request.lpuId && !opts.some((l) => l.id === request.lpu?.id)) {
+   591→   591→      opts.push(request.lpu);
+   592→   592→    }
+   593→   593→    return opts;
+   594→   594→  }, [doctorLpus, request]);
+   595→   595→
+   596→   596→  // Итоговый lpuId: при единственном ЛПУ НВ — подставляется автоматически
+   597→   597→  const resolvedLpuId = lpuMode === "single" ? (doctorLpus[0]?.id ?? "") : form.lpuId;
+   598→   598→
+   599→   599→  const lpuCity = useMemo(() => {
+   600→   600→    if (!resolvedLpuId) return null;
+   601→   601→    const fromDoctor = doctorLpus.find((l) => l.id === resolvedLpuId);
+   602→   602→    if (fromDoctor) return fromDoctor.city.name;
+   603→   603→    if (request?.lpu && request.lpu.id === resolvedLpuId) return request.lpu.city.name;
+   604→   604→    return lpus?.find((l) => l.id === resolvedLpuId)?.city.name ?? null;
+   605→   605→  }, [resolvedLpuId, doctorLpus, lpus, request]);
+   606→   606→
+   607→   607→  const save = useMutation({
+   608→   608→    mutationFn: () => {
+   609→   609→      const body = {
+   610→   610→        date: form.date,
+   611→   611→        patientName: form.patientName.trim(),
+   612→   612→        // НВ и ЛПУ необязательны (доработка): обязателен только пациент
+   613→   613→        doctorId: form.doctorId || null,
+   614→   614→        lpuId: resolvedLpuId || null,
+   615→   615→        destination: form.destination.trim() || "МРТ ТОЧНО",
+   616→   616→        assignedIds: form.assignedIds,
+   617→   617→        doneIds: form.doneIds,
+   618→   618→        comment: form.comment.trim() || null,
+   619→   619→      };
+   620→   620→      return request
+   621→   621→        ? api.put(`/api/app/requests/${request.id}`, body)
+   622→   622→        : api.post("/api/app/requests", body);
+   623→   623→    },
+   624→   624→    onSuccess: () => {
+   625→   625→      toast.success(request ? "Заявка обновлена" : "Заявка зарегистрирована");
+   626→   626→      qc.invalidateQueries({ queryKey: ["requests"] });
+   627→   627→      qc.invalidateQueries({ queryKey: ["doctor-card"] });
+   628→   628→      qc.invalidateQueries({ queryKey: ["dashboard"] });
+   629→   629→      onOpenChange(false);
+   630→   630→    },
+   631→   631→    onError: (e: Error) => toast.error(e.message),
+   632→   632→  });
+   633→   633→
+   634→   634→  return (
+   635→   635→    <Dialog open onOpenChange={onOpenChange}>
+   636→   636→      <DialogContent className="max-h-[calc(100dvh-4rem)] overflow-y-auto sm:max-w-lg">
+   637→   637→        <DialogHeader>
+   638→   638→          <DialogTitle className="font-display text-brand">
+   639→   639→            {request ? "Карточка заявки" : "Регистрация заявки"}
+   640→   640→          </DialogTitle>
+   641→   641→          <DialogDescription>
+   642→   642→            {request
+   643→   643→              ? "Просмотр и редактирование направления пациента на обследование"
+   644→   644→              : "Учет направления пациента на обследование"}
+   645→   645→          </DialogDescription>
+   646→   646→        </DialogHeader>
+   647→   647→
+   648→   648→        <div className="space-y-4 py-1">
+   649→   649→          {/* 1. Дата */}
+   650→   650→          <div className="space-y-1.5">
+   651→   651→            <Label>
+   652→   652→              Дата <span className="text-azure-dark">*</span>
+   653→   653→            </Label>
+   654→   654→            <Input
+   655→   655→              type="date"
+   656→   656→              value={form.date}
+   657→   657→              onChange={(e) => setForm({ ...form, date: e.target.value })}
+   658→   658→            />
+   659→   659→          </div>
+   660→   660→
+   661→   661→          {/* 2. ФИО пациента */}
+   662→   662→          <div className="space-y-1.5">
+   663→   663→            <Label>
+   664→   664→              ФИО пациента <span className="text-azure-dark">*</span>
+   665→   665→            </Label>
+   666→   666→            <Input
+   667→   667→              value={form.patientName}
+   668→   668→              onChange={(e) => setForm({ ...form, patientName: e.target.value })}
+   669→   669→              placeholder="Иванов Иван Иванович"
+   670→   670→            />
+   671→   671→          </div>
+   672→   672→
+   673→   673→          {/* 3. ФИО НВ — необязательно: пациент может не помнить врача */}
+   674→   674→          <div className="space-y-1.5">
+   675→   675→            <Label>ФИО НВ</Label>
+   676→   676→            <Select
+   677→   677→              value={form.doctorId || NONE}
+   678→   678→              onValueChange={(v) => {
+   679→   679→                const nd = doctors?.find((d) => d.id === v);
+   680→   680→                const dl = (nd?.lpus ?? []).map((x) => x.lpu).filter((l) => l.isActive !== false);
+   681→   681→                setForm((f) => ({
+   682→   682→                  ...f,
+   683→   683→                  doctorId: v === NONE ? "" : v,
+   684→   684→                  lpuId: v === NONE ? "" : dl.length === 1 ? dl[0].id : "",
+   685→   685→                }));
+   686→   686→              }}
+   687→   687→            >
+   688→   688→              <SelectTrigger className="bg-white">
+   689→   689→                <SelectValue placeholder="Не указан" />
+   690→   690→              </SelectTrigger>
+   691→   691→              <SelectContent className="max-h-72">
+   692→   692→                <SelectItem value={NONE}>Не указан</SelectItem>
+   693→   693→                {doctorOptions.map((d) => (
+   694→   694→                  <SelectItem key={d.id} value={d.id}>
+   695→   695→                    {d.fullName}
+   696→   696→                  </SelectItem>
+   697→   697→                ))}
+   698→   698→              </SelectContent>
+   699→   699→            </Select>
+   700→   700→            <p className="text-[11px] text-muted-foreground">
+   701→   701→              Если пациент не помнит врача — оставьте «Не указан», информацию можно указать в комментарии
+   702→   702→            </p>
+   703→   703→          </div>
+   704→   704→
+   705→   705→          {/* 4. ЛПУ и город — автозаполнение из карточки НВ (необязательно) */}
+   706→   706→          <div className="space-y-1.5">
+   707→   707→            <Label>ЛПУ</Label>
+   708→   708→            {lpuMode === "single" && (
+   709→   709→              <>
+   710→   710→                <Input
+   711→   711→                  disabled
+   712→   712→                  readOnly
+   713→   713→                  value={
+   714→   714→                    doctorLpus[0] ? `${doctorLpus[0].name} · ${doctorLpus[0].city.name}` : "—"
+   715→   715→                  }
+   716→   716→                  className="bg-white text-muted-foreground"
+   717→   717→                />
+   718→   718→                <p className="text-[11px] text-muted-foreground">
+   719→   719→                  Единственное активное ЛПУ врача — подставлено автоматически
+   720→   720→                </p>
+   721→   721→              </>
+   722→   722→            )}
+   723→   723→            {lpuMode === "multi" && (
+   724→   724→              <Select
+   725→   725→                value={form.lpuId || NONE}
+   726→   726→                onValueChange={(v) => setForm({ ...form, lpuId: v === NONE ? "" : v })}
+   727→   727→              >
+   728→   728→                <SelectTrigger className="bg-white">
+   729→   729→                  <SelectValue placeholder="Выберите ЛПУ из привязок НВ" />
+   730→   730→                </SelectTrigger>
+   731→   731→                <SelectContent className="max-h-72">
+   732→   732→                  <SelectItem value={NONE}>Не указано</SelectItem>
+   733→   733→                  {multiOptions.map((l) => (
+   734→   734→                    <SelectItem key={l.id} value={l.id}>
+   735→   735→                      {l.name} · {l.city.name}
+   736→   736→                    </SelectItem>
+   737→   737→                  ))}
+   738→   738→                </SelectContent>
+   739→   739→              </Select>
+   740→   740→            )}
+   741→   741→            {lpuMode === "free" && (
+   742→   742→              <Select
+   743→   743→                value={form.lpuId || NONE}
+   744→   744→                onValueChange={(v) => setForm({ ...form, lpuId: v === NONE ? "" : v })}
+   745→   745→              >
+   746→   746→                <SelectTrigger className="bg-white">
+   747→   747→                  <SelectValue placeholder="Не указано (опционально)" />
+   748→   748→                </SelectTrigger>
+   749→   749→                <SelectContent className="max-h-72">
+   750→   750→                  <SelectItem value={NONE}>Не указано</SelectItem>
+   751→   751→                  {freeLpuOptions.map((l) => (
+   752→   752→                    <SelectItem key={l.id} value={l.id}>
+   753→   753→                      {l.name} · {l.city.name}
+   754→   754→                    </SelectItem>
+   755→   755→                  ))}
+   756→   756→                </SelectContent>
+   757→   757→              </Select>
+   758→   758→            )}
+   759→   759→            {lpuCity && (
+   760→   760→              <p className="text-[11px] text-muted-foreground">Город: {lpuCity}</p>
+   761→   761→            )}
+   762→   762→          </div>
+   763→   763→
+   764→   764→          {/* 5. Куда направление — по умолчанию сохраняется «МРТ ТОЧНО» */}
+   765→   765→          <div className="space-y-1.5">
+   766→   766→            <Label>Куда направление</Label>
+   767→   767→            <Input
+   768→   768→              value={form.destination}
+   769→   769→              onChange={(e) => setForm({ ...form, destination: e.target.value })}
+   770→   770→              placeholder="МРТ ТОЧНО"
+   771→   771→            />
+   772→   772→            <p className="text-[11px] text-muted-foreground">
+   773→   773→              Если не изменить — сохранится «МРТ ТОЧНО»
+   774→   774→            </p>
+   775→   775→          </div>
+   776→   776→
+   777→   777→          {/* 6. Что назначено — мультивыбор из номенклатуры (необязательно) */}
+   778→   778→          <div className="space-y-1.5">
+   779→   779→            <div className="flex items-center justify-between">
+   780→   780→              <Label>Что назначено</Label>
+   781→   781→              <span className="text-[11px] text-muted-foreground">
+   782→   782→                Выбрано: {form.assignedIds.length}
+   783→   783→              </span>
+   784→   784→            </div>
+   785→   785→            <div className="max-h-40 space-y-1 overflow-y-auto rounded-lg border border-border bg-white p-3">
+   786→   786→              {!nomenclature?.length ? (
+   787→   787→                <p className="py-2 text-center text-xs text-muted-foreground">
+   788→   788→                  Справочник номенклатуры пуст — добавьте позиции в разделе «Справочники»
+   789→   789→                </p>
+   790→   790→              ) : (
+   791→   791→                nomenclature.map((n) => (
+   792→   792→                  <label
+   793→   793→                    key={n.id}
+   794→   794→                    className="flex cursor-pointer items-center gap-2.5 rounded-md px-2 py-1.5 hover:bg-sky-light/60"
+   795→   795→                  >
+   796→   796→                    <Checkbox
+   797→   797→                      checked={form.assignedIds.includes(n.id)}
+   798→   798→                      onCheckedChange={(c) =>
+   799→   799→                        setForm((f) => ({
+   800→   800→                          ...f,
+   801→   801→                          assignedIds: toggleInList(f.assignedIds, n.id, c === true),
+   802→   802→                        }))
+   803→   803→                      }
+   804→   804→                      aria-label={`Назначить ${n.name}`}
+   805→   805→                    />
+   806→   806→                    <span className="text-sm text-brand">{n.name}</span>
+   807→   807→                  </label>
+   808→   808→                ))
+   809→   809→              )}
+   810→   810→            </div>
+   811→   811→          </div>
+   812→   812→
+   813→   813→          {/* 7. Что сделано — мультивыбор из номенклатуры (опционально) */}
+   814→   814→          <div className="space-y-1.5">
+   815→   815→            <div className="flex items-center justify-between">
+   816→   816→              <Label>Что сделано</Label>
+   817→   817→              <span className="text-[11px] text-muted-foreground">
+   818→   818→                Выбрано: {form.doneIds.length}
+   819→   819→              </span>
+   820→   820→            </div>
+   821→   821→            <div className="max-h-40 space-y-1 overflow-y-auto rounded-lg border border-border bg-white p-3">
+   822→   822→              {!nomenclature?.length ? (
+   823→   823→                <p className="py-2 text-center text-xs text-muted-foreground">
+   824→   824→                  Справочник номенклатуры пуст — добавьте позиции в разделе «Справочники»
+   825→   825→                </p>
+   826→   826→              ) : (
+   827→   827→                nomenclature.map((n) => (
+   828→   828→                  <label
+   829→   829→                    key={n.id}
+   830→   830→                    className="flex cursor-pointer items-center gap-2.5 rounded-md px-2 py-1.5 hover:bg-sky-light/60"
+   831→   831→                  >
+   832→   832→                    <Checkbox
+   833→   833→                      checked={form.doneIds.includes(n.id)}
+   834→   834→                      onCheckedChange={(c) =>
+   835→   835→                        setForm((f) => ({
+   836→   836→                          ...f,
+   837→   837→                          doneIds: toggleInList(f.doneIds, n.id, c === true),
+   838→   838→                        }))
+   839→   839→                      }
+   840→   840→                      aria-label={`Отметить выполненным ${n.name}`}
+   841→   841→                    />
+   842→   842→                    <span className="text-sm text-brand">{n.name}</span>
+   843→   843→                  </label>
+   844→   844→                ))
+   845→   845→              )}
+   846→   846→            </div>
+   847→   847→            <p className="text-[11px] text-muted-foreground">
+   848→   848→              Опционально — можно заполнить позже при редактировании заявки
+   849→   849→            </p>
+   850→   850→          </div>
+   851→   851→
+   852→   852→          {/* 8. Комментарий (опционально) */}
+   853→   853→          <div className="space-y-1.5">
+   854→   854→            <Label>Комментарий</Label>
+   855→   855→            <Textarea
+   856→   856→              rows={2}
+   857→   857→              value={form.comment}
+   858→   858→              onChange={(e) => setForm({ ...form, comment: e.target.value })}
+   859→   859→              placeholder="Опционально — заметки по заявке, договоренности…"
+   860→   860→            />
+   861→   861→          </div>
+   862→   862→        </div>
+   863→   863→
+   864→   864→        <DialogFooter>
+   865→   865→          <Button variant="outline" onClick={() => onOpenChange(false)}>
+   866→   866→            Отмена
+   867→   867→          </Button>
+   868→   868→          <Button
+   869→   869→            onClick={() => save.mutate()}
+   870→   870→            disabled={!form.date || !form.patientName.trim() || save.isPending}
+   871→   871→            className="bg-azure hover:bg-azure-dark"
+   872→   872→          >
+   873→   873→            {save.isPending && <ClipboardList className="h-4 w-4 animate-spin" strokeWidth={2} />}
+   874→   874→            {request ? "Сохранить" : "Зарегистрировать"}
+   875→   875→          </Button>
+   876→   876→        </DialogFooter>
+   877→   877→      </DialogContent>
+   878→   878→    </Dialog>
+   879→   879→  );
+   880→   880→}
+   881→   881→
