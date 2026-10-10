@@ -1,46 +1,85 @@
-
+# ============================================
+# Dependencies
+# ============================================
+node_modules/
+.pnp
+.pnp.*
+.yarn/*
 !.yarn/patches
 !.yarn/plugins
 !.yarn/releases
 !.yarn/versions
-# See https://help.github.com/articles/ignoring-files/ for more about ignoring files.
-# Skills directory
-# debug
-# dependencies
-# env files (can opt-in for committing if needed)
-# misc
-# next.js
-# production
-# testing
-# typescript
-# vercel
-*.log
-*.pem
-*.tsbuildinfo
-.DS_Store
-.claude
-.env*
-.pnp.*
 .pnpm-debug.log*
-.vercel
-.yarn/*
-.z-ai-config
-/.next/
-/.pnp
-/build
-/coverage
-/out/
-/skills/tool-results/
-dev.log
-dev.out.log
-local-*
-next-env.d.ts
-node_modules
-npm-debug.log*
-prompt
-server.log
-test
-tool-results/
 yarn-debug.log*
 yarn-error.log*
+npm-debug.log*
 
+# ============================================
+# Next.js / build output
+# ============================================
+/.next/
+/out/
+/build
+/dist
+next-env.d.ts
+*.tsbuildinfo
+
+# ============================================
+# Production / coverage
+# ============================================
+/coverage
+
+# ============================================
+# Environment files
+# ============================================
+.env
+.env.*
+!.env.example
+
+# ============================================
+# Vercel
+# ============================================
+.vercel
+
+# ============================================
+# Logs & debug
+# ============================================
+*.log
+*.pem
+dev.log
+dev.out.log
+server.log
+
+# ============================================
+# Local data / runtime dirs (не в репо)
+# ============================================
+/db/
+/upload/
+/download/
+/agent-ctx/
+/.zscripts/
+/tool-results/
+/skills/tool-results/
+local-*
+prompt
+test
+
+# ============================================
+# Snapshots / handover / misc
+# ============================================
+.initial_snapshot.json
+/handover/
+
+# ============================================
+# Editors / OS
+# ============================================
+.DS_Store
+.idea/
+.vscode/*
+!.vscode/extensions.json
+
+# ============================================
+# AI / tool configs
+# ============================================
+.claude
+.z-ai-config
